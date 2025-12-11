@@ -1,0 +1,161 @@
+# =========================
+# Operating System Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Project Meta / Build
+# =========================
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+wheels/
+pip-delete-this-directory.txt
+pip-log.txt
+MANIFEST
+
+# PyInstaller
+*.spec
+*.manifest
+
+# Sphinx documentation
+docs/_build/
+
+# mkdocs
+/site
+
+# =========================
+# Python Bytecode & C‐exts
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# =========================
+# Testing & Coverage
+# =========================
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.pytest_cache/
+.hypothesis/
+
+# =========================
+# Logs & Runtime Files
+# =========================
+*.log
+*.pot
+*.mo
+
+# =========================
+# Framework / Tooling
+# =========================
+# Django
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter / IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# =========================
+# Dependency Managers
+# =========================
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+pdm.lock
+.pdm.toml
+
+# PEP 582 (__pypackages__)
+__pypackages__/
+
+# =========================
+# Virtual Environments
+# =========================
+**.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =========================
+# IDEs / Editors
+# =========================
+# JetBrains (PyCharm, IntelliJ)
+.idea/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# =========================
+# Type Checkers
+# =========================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# =========================
+# Miscellaneous
+# =========================
+# Project‐specific
+data/
+artifact/
+docs/
+misc/
+scripts/
+!artifact.tar.gz
+
+# Secret config
+secrets.toml
+
+# Misc
+*.sage.py
+cython_debug/

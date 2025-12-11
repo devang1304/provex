@@ -1,0 +1,29 @@
+name: provex
+channels:
+  - pytorch
+  - pyg
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy<2.0
+  - pandas>=1.5.0
+  - scikit-learn>=1.3,<2.0
+  - networkx>=2.8
+  - tqdm>=4.66.0
+  - pytz>=2023.3
+  - psycopg2
+  - plotly>=5.22.0
+  - streamlit>=1.32.0
+  - openai>=1.30.0
+  # PyTorch ecosystem
+  - pytorch
+  - pyg
+  - pytorch-scatter
+  - pytorch-sparse
+  - pytorch-cluster
+  - pytorch-spline-conv
+  # Pip dependencies
+  - pip
+  - pip:
+      - xxhash>=3.4
