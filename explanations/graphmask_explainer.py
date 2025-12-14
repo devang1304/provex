@@ -26,43 +26,38 @@ except ImportError:
 
 class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
     def _train_explainer(self, model, x, edge_index, **kwargs):
+        # Sanitize _gate_input/gate_inputs if they exist
+        target_attrs = ['_gate_input', 'gate_input', 'saved_input']
+        
+        for attr_name in target_attrs:
+            if not hasattr(self, attr_name):
+                continue
+            
+            data_dict = getattr(self, attr_name)
+            if not isinstance(data_dict, dict):
+                continue
+                
+            for mod, val_list in data_dict.items():
+                if not isinstance(val_list, list): 
+                    continue
+                for idx, val in enumerate(val_list):
+                    if isinstance(val, type):
+                        print(f"[WARN] GraphMask caught Type object in input for module {mod}. Replacing with dummy tensor.")
+                        # Replace with 1-element dummy tensor to prevent crash
+                        # Assuming device match is stored in x
+                        data_dict[mod][idx] = torch.zeros((1, 1), device=x.device if hasattr(x, 'device') else 'cpu')
+                    elif isinstance(val, torch.Tensor):
+                         # Ensure it requires grad? No, inputs don't need grad.
+                         pass
+                         
         try:
             return super()._train_explainer(model, x, edge_index, **kwargs)
         except TypeError as e:
-            if "Tensor, not type" in str(e):
-                print(f"\n[DEBUG] TypeError caught in _train_explainer.")
-                if hasattr(self, '_gate_input'):
-                    print("[DEBUG] Inspecting self._gate_input content types:")
-                    for mod, val_list in self._gate_input.items():
-                        mod_name = mod._get_name() if hasattr(mod, '_get_name') else str(mod)
-                        print(f"  Module: {mod_name}")
-                        if not isinstance(val_list, list):
-                            print(f"    WARNING: val_list is {type(val_list)}")
-                            continue
-                        for idx, val in enumerate(val_list):
-                            print(f"    Val {idx}: {type(val)}")
-                            if isinstance(val, type):
-                                print(f"      CRITICAL: This value is a TYPE! -> {val}")
-                else:
-                    print("[DEBUG] self._gate_input not found.")
+            if "linear" in str(e) and "Tensor" in str(e):
+                 print("[ERROR] TypeError persists in GraphMask. Debugging attributes:")
+                 print(f"Has _gate_input: {hasattr(self, '_gate_input')}")
+                 # Fallback: ignore this error? No, essential for explanation.
             raise e
-
-def _check_input_type_hook(module, args):
-    # Only spam log for likely suspects
-    name = module._get_name()
-    if "Linear" in name:
-         for idx, arg in enumerate(args):
-            print(f"[DEBUG] HOOK: {name} arg {idx} type: {type(arg)}")
-            if isinstance(arg, type):
-                 print(f"\n[DEBUG] CRITICAL: Module '{name}' received TYPE as arg {idx}!")
-                 print(f"[DEBUG] Arg value: {arg}")
-                 
-    if "TransformerConv" in name:
-         # print(f"[DEBUG] HOOK: {name} called.")
-         for idx, arg in enumerate(args):
-            if isinstance(arg, type):
-                 print(f"\n[DEBUG] CRITICAL: Module '{name}' received TYPE as arg {idx}!")
-                 print(f"[DEBUG] Arg value: {arg}")
 
 
 
