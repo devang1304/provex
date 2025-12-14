@@ -25,23 +25,44 @@ except ImportError:
     from .pyg_graphmask import GraphMaskExplainer as PyGGraphMaskExplainer
 
 class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._wrap_gates()
+        
+    def _wrap_gates(self):
+        # self.gates is a ModuleList of ModuleLists
+        for i, layer_gates in enumerate(self.gates):
+            for j, gate in enumerate(layer_gates):
+                # We replace the gate with a wrapper that checks input
+                self.gates[i][j] = DebugGate(gate, i, j)
+
     def _train_explainer(self, model, x, edge_index, **kwargs):
         try:
             return super()._train_explainer(model, x, edge_index, **kwargs)
         except TypeError as e:
             if "Tensor, not type" in str(e):
-                print("\n[DEBUG] Caught TypeError in GraphMaskExplainer._train_explainer.")
-                print(f"[DEBUG] Model: {model}")
-                print("[DEBUG] Iterating modules to check for potential mismatches:")
-                for i, module in enumerate(model.modules()):
-                    print(f"[DEBUG] Module {i}: {module._get_name()}")
+                print(f"\n[DEBUG] TypeError caught. Inspecting gate inputs...")
                 
-                # Check for gates
-                if hasattr(self, 'gates'):
-                   print(f"[DEBUG] Gates length: {len(self.gates)}")
-                   
-                raise e
+                # Inspect self._gate_input if accessible (PyG implementation dependent)
+                # But since we are crashing inside the loop, we can't see the loop variables directly 
+                # unless we reimplement the loop.
+                # Since we can't easily copy the whole PyG method, we will rely on patching the gates.
+                pass 
             raise e
+            raise e
+
+class DebugGate(torch.nn.Module):
+    def __init__(self, gate, layer_idx, path_idx):
+        super().__init__()
+        self.gate = gate
+        self.layer_idx = layer_idx
+        self.path_idx = path_idx
+        
+    def forward(self, x):
+        if not isinstance(x, torch.Tensor):
+            print(f"\n[DEBUG] CRITICAL: Gate [{self.layer_idx}][{self.path_idx}] received input of type {type(x)} instead of Tensor.")
+            print(f"[DEBUG] Input value: {x}")
+        return self.gate(x)
 
 
 from .utils import EventContext, TemporalLinkWrapper, ensure_gpu_space, log_cuda_memory
