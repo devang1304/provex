@@ -152,9 +152,6 @@ class GraphMaskExplainer:
             )
 
 
-        # Register debug hooks to catch non-tensor inputs
-        for module in wrapper.modules():
-            module.register_forward_pre_hook(_check_input_type_hook)
 
         # Initialize PyG Explainer with GraphMask algorithm
         # Note: PyG's GraphMaskExplainer parameters might differ slightly in naming/scale
