@@ -27,7 +27,7 @@ except ImportError:
 class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
     def _train_explainer(self, model, x, edge_index, **kwargs):
         # Sanitize _gate_input/gate_inputs if they exist
-        target_attrs = ['_gate_input', 'gate_input', 'saved_input']
+        target_attrs = ['_gate_input', 'gate_input', 'saved_input', '_GraphMaskExplainer__gate_input']
         
         for attr_name in target_attrs:
             if not hasattr(self, attr_name):
