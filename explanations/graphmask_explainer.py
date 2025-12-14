@@ -17,11 +17,30 @@ import torch
 from torch import Tensor
 from tqdm.auto import tqdm
 
-from torch_geometric.explain import Explainer, ModelConfig
 try:
     from torch_geometric.explain.algorithm import GraphMaskExplainer as PyGGraphMaskExplainer
 except ImportError:
     from .pyg_graphmask import GraphMaskExplainer as PyGGraphMaskExplainer
+
+class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
+    def _train_explainer(self, model, x, edge_index, **kwargs):
+        try:
+            return super()._train_explainer(model, x, edge_index, **kwargs)
+        except TypeError as e:
+            if "Tensor, not type" in str(e):
+                print("\n[DEBUG] Caught TypeError in GraphMaskExplainer._train_explainer.")
+                print(f"[DEBUG] Model: {model}")
+                print("[DEBUG] Iterating modules to check for potential mismatches:")
+                for i, module in enumerate(model.modules()):
+                    print(f"[DEBUG] Module {i}: {module._get_name()}")
+                
+                # Check for gates
+                if hasattr(self, 'gates'):
+                   print(f"[DEBUG] Gates length: {len(self.gates)}")
+                   
+                raise e
+            raise e
+
 
 from .utils import EventContext, TemporalLinkWrapper, ensure_gpu_space, log_cuda_memory
 try:  # pragma: no cover
@@ -118,7 +137,8 @@ class GraphMaskExplainer:
         # but PyG implementation might have specific kwargs.
         # For now, we use default penalty_scaling=5 and pass our weights if supported
         # or rely on defaults.
-        algorithm = PyGGraphMaskExplainer(
+        # USE DEBUG VERSION
+        algorithm = DebugGraphMaskExplainer(
             num_layers=1, # TemporalLinkWrapper acts as a single layer GNN
             epochs=self.epochs,
             lr=self.lr,
