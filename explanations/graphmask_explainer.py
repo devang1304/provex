@@ -25,44 +25,24 @@ except ImportError:
     from .pyg_graphmask import GraphMaskExplainer as PyGGraphMaskExplainer
 
 class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._wrap_gates()
-        
-    def _wrap_gates(self):
-        # self.gates is a ModuleList of ModuleLists
-        for i, layer_gates in enumerate(self.gates):
-            for j, gate in enumerate(layer_gates):
-                # We replace the gate with a wrapper that checks input
-                self.gates[i][j] = DebugGate(gate, i, j)
-
     def _train_explainer(self, model, x, edge_index, **kwargs):
         try:
             return super()._train_explainer(model, x, edge_index, **kwargs)
         except TypeError as e:
             if "Tensor, not type" in str(e):
-                print(f"\n[DEBUG] TypeError caught. Inspecting gate inputs...")
-                
-                # Inspect self._gate_input if accessible (PyG implementation dependent)
-                # But since we are crashing inside the loop, we can't see the loop variables directly 
-                # unless we reimplement the loop.
-                # Since we can't easily copy the whole PyG method, we will rely on patching the gates.
+                print(f"\n[DEBUG] TypeError caught in _train_explainer.")
+                # We expect the pre-hooks to have printed the culprit already.
                 pass 
             raise e
-            raise e
 
-class DebugGate(torch.nn.Module):
-    def __init__(self, gate, layer_idx, path_idx):
-        super().__init__()
-        self.gate = gate
-        self.layer_idx = layer_idx
-        self.path_idx = path_idx
-        
-    def forward(self, x):
-        if not isinstance(x, torch.Tensor):
-            print(f"\n[DEBUG] CRITICAL: Gate [{self.layer_idx}][{self.path_idx}] received input of type {type(x)} instead of Tensor.")
-            print(f"[DEBUG] Input value: {x}")
-        return self.gate(x)
+def _check_input_type_hook(module, args):
+    for idx, arg in enumerate(args):
+        if isinstance(arg, type):
+            print(f"\n[DEBUG] CRITICAL: Module '{module._get_name()}' received TYPE as arg {idx}!")
+            print(f"[DEBUG] Arg value: {arg}")
+            print(f"[DEBUG] Full args: {args}")
+
+
 
 
 from .utils import EventContext, TemporalLinkWrapper, ensure_gpu_space, log_cuda_memory
@@ -152,6 +132,11 @@ class GraphMaskExplainer:
                 edges=[],
                 loss_history=[],
             )
+
+
+        # Register debug hooks to catch non-tensor inputs
+        for module in wrapper.modules():
+            module.register_forward_pre_hook(_check_input_type_hook)
 
         # Initialize PyG Explainer with GraphMask algorithm
         # Note: PyG's GraphMaskExplainer parameters might differ slightly in naming/scale
