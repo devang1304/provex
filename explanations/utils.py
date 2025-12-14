@@ -11,15 +11,18 @@ from torch_geometric.data import TemporalData
 from torch_geometric.loader import TemporalDataLoader
 from torch_geometric.nn.models.tgn import LastNeighborLoader
 from tqdm import tqdm
+import sys
 
 try:
     from ..config import ARTIFACT_DIR, GRAPHS_DIR, MODELS_DIR, neighbor_size, node_embedding_dim
     from ..kairos_utils import tensor_find
     from .. import kairos_tgnn_model
+    model = kairos_tgnn_model
 except ImportError:  # pragma: no cover - fallback when run as script
     from config import ARTIFACT_DIR, GRAPHS_DIR, MODELS_DIR, neighbor_size, node_embedding_dim
     from kairos_utils import tensor_find
     import kairos_tgnn_model
+    model = kairos_tgnn_model
 
 # Controls where event context tensors are stored. Use "gpu", "cpu", or "cpu_pin";
 # default "auto" keeps contexts on CPU and streams them to GPU for explanation.
@@ -296,6 +299,10 @@ def load_model(
     """Loads the trained PROVEX model components."""
     model_path = model_path or os.path.join(MODELS_DIR, "models.pt")
     device = device or model.device
+    
+    # Legacy checkpoint support: alias 'model' to our current model module
+    sys.modules['model'] = model
+    
     memory, gnn, link_pred, _ = torch.load(model_path, map_location=device)
     memory = memory.to(device)
     gnn = gnn.to(device)
