@@ -31,16 +31,39 @@ class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
         except TypeError as e:
             if "Tensor, not type" in str(e):
                 print(f"\n[DEBUG] TypeError caught in _train_explainer.")
-                # We expect the pre-hooks to have printed the culprit already.
-                pass 
+                if hasattr(self, '_gate_input'):
+                    print("[DEBUG] Inspecting self._gate_input content types:")
+                    for mod, val_list in self._gate_input.items():
+                        mod_name = mod._get_name() if hasattr(mod, '_get_name') else str(mod)
+                        print(f"  Module: {mod_name}")
+                        if not isinstance(val_list, list):
+                            print(f"    WARNING: val_list is {type(val_list)}")
+                            continue
+                        for idx, val in enumerate(val_list):
+                            print(f"    Val {idx}: {type(val)}")
+                            if isinstance(val, type):
+                                print(f"      CRITICAL: This value is a TYPE! -> {val}")
+                else:
+                    print("[DEBUG] self._gate_input not found.")
             raise e
 
 def _check_input_type_hook(module, args):
-    for idx, arg in enumerate(args):
-        if isinstance(arg, type):
-            print(f"\n[DEBUG] CRITICAL: Module '{module._get_name()}' received TYPE as arg {idx}!")
-            print(f"[DEBUG] Arg value: {arg}")
-            print(f"[DEBUG] Full args: {args}")
+    # Only spam log for likely suspects
+    name = module._get_name()
+    if "Linear" in name:
+         for idx, arg in enumerate(args):
+            print(f"[DEBUG] HOOK: {name} arg {idx} type: {type(arg)}")
+            if isinstance(arg, type):
+                 print(f"\n[DEBUG] CRITICAL: Module '{name}' received TYPE as arg {idx}!")
+                 print(f"[DEBUG] Arg value: {arg}")
+                 
+    if "TransformerConv" in name:
+         # print(f"[DEBUG] HOOK: {name} called.")
+         for idx, arg in enumerate(args):
+            if isinstance(arg, type):
+                 print(f"\n[DEBUG] CRITICAL: Module '{name}' received TYPE as arg {idx}!")
+                 print(f"[DEBUG] Arg value: {arg}")
+
 
 
 
