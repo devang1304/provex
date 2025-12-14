@@ -56,7 +56,8 @@ artifact/
     └── node_mapping.json          # Optional: exported from DB
 ```
 
-> ## **Quick Start**: 
+> ## **Quick Start**:
+>
 > Pre-computed artifacts are included. Simply extract:
 >
 > ```bash
@@ -95,6 +96,16 @@ USER = 'postgres'
 PASSWORD = 'password'
 PORT = '5432'
 ```
+
+### OpenAI API Key
+
+To enable GPT-powered narrative summaries in reports, set your OpenAI API key:
+
+```bash
+export OPENAI_API_KEY="sk-your-api-key-here"
+```
+
+> Without this key, reports will still be generated but GPT narrative sections will be skipped.
 
 ---
 
