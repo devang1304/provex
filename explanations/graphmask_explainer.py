@@ -19,10 +19,10 @@ from tqdm.auto import tqdm
 
 from torch_geometric.explain import Explainer, ModelConfig
 
-try:
-    from torch_geometric.explain.algorithm import GraphMaskExplainer as PyGGraphMaskExplainer
-except ImportError:
-    from .pyg_graphmask import GraphMaskExplainer as PyGGraphMaskExplainer
+# PyG's GraphMaskExplainer has a bug with TransformerConv layers where
+# latest_source_embeddings/latest_messages/latest_target_embeddings are not
+# properly populated, causing TypeError. Use our custom polyfill instead.
+from .pyg_graphmask import GraphMaskExplainer as PyGGraphMaskExplainer
 
 class DebugGraphMaskExplainer(PyGGraphMaskExplainer):
     def _train_explainer(self, model, x, edge_index, **kwargs):
