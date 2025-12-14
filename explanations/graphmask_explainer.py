@@ -17,6 +17,8 @@ import torch
 from torch import Tensor
 from tqdm.auto import tqdm
 
+from torch_geometric.explain import Explainer, ModelConfig
+
 try:
     from torch_geometric.explain.algorithm import GraphMaskExplainer as PyGGraphMaskExplainer
 except ImportError:
