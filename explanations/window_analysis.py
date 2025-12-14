@@ -435,14 +435,20 @@ def run_pipeline() -> Dict[str, object]:
                 return TemporalLinkWrapper(gnn_cpu, link_pred_cpu, ctx, target_device)
             return TemporalLinkWrapper(gnn, link_pred, ctx, target_device)
 
-        mask_results = masker.explain_window(
-            high_loss_events,
-            wrapper_factory=_wrapper_factory,
-            device=device,
-            top_k_events=GRAPHMASK_TOP_EVENTS,
-            fallback_wrapper_factory=_wrapper_factory,
-            fallback_device=cpu_device,
-        )
+        # GraphMask is currently broken due to PyG version incompatibility with TransformerConv.
+        # We skip it and use empty results to allow the pipeline to continue.
+        try:
+            mask_results = masker.explain_window(
+                high_loss_events,
+                wrapper_factory=_wrapper_factory,
+                device=device,
+                top_k_events=GRAPHMASK_TOP_EVENTS,
+                fallback_wrapper_factory=_wrapper_factory,
+                fallback_device=cpu_device,
+            )
+        except TypeError as e:
+            print(f"[warn] GraphMask failed with TypeError: {e}. Skipping GraphMask for this window.")
+            mask_results = []
         print(
             f"[info] GraphMask analysed {len(mask_results)} event(s) for window {window[2]}.")
         # Aggregate individual event explanations into a window-level summary
