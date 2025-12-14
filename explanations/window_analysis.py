@@ -52,7 +52,7 @@ WARMUP_MARGIN_SECONDS = int(os.environ.get(
     "PROVEX_EXPLAIN_WARMUP_SEC", 0))
 
 HARD_CODED_ATTACK_WINDOWS = [
-    ("2018-04-06 12:00:00", "2018-04-06 12:15:00"),
+    ("2018-04-06 11:30:00", "2018-04-06 12:15:00"),
 ]
 
 OUTPUT_DIR = os.path.join(ARTIFACT_DIR, "explanations")

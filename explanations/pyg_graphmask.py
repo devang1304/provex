@@ -6,8 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn import Parameter
 import torch.nn.functional as F
-from torch_geometric.explain import ExplainerAlgorithm
-# from torch_geometric.explain.config import ModelTaskLevel
+from torch_geometric.explain import ExplainerAlgorithm, Explanation
 
 class GraphMaskExplainer(ExplainerAlgorithm):
     """
@@ -92,7 +91,7 @@ class GraphMaskExplainer(ExplainerAlgorithm):
 
         # Final mask
         final_mask = torch.sigmoid(mask).detach()
-        return {'edge_mask': final_mask}
+        return Explanation(x=x, edge_index=edge_index, edge_mask=final_mask)
 
     def _loss(self, logits: Tensor, target: Tensor, mask: Tensor) -> Tensor:
         # Prediction loss (Cross Entropy)
