@@ -56,7 +56,21 @@ artifact/
     └── node_mapping.json          # Optional: exported from DB
 ```
 
-> ## **Quick Start**:
+> ### **First-Time Clone (Git LFS)**
+>
+> The `artifact.tar.gz` file is stored using [Git LFS](https://git-lfs.com/). After cloning, pull the LFS files:
+>
+> ```bash
+> # Install Git LFS (if not already installed)
+> brew install git-lfs   # macOS
+> # apt install git-lfs  # Ubuntu/Debian
+>
+> # Initialize LFS and pull large files
+> git lfs install
+> git lfs pull
+> ```
+
+> ### **Quick Start**:
 >
 > Pre-computed artifacts are included. Simply extract:
 >
