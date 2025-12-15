@@ -151,6 +151,7 @@ artifact/
 docs/
 misc/
 scripts/
+report_2/
 !artifact.tar.gz
 
 # Secret config

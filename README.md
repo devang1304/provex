@@ -2,7 +2,7 @@
 
 **Prov**enance Graph **Ex**plainability Framework — an XAI pipeline for Temporal Graph Network (TGN) intrusion detection on the DARPA CADETS provenance graph dataset. PROVEX generates graph-based explanations using multiple methods (GraphMask, VA-TG, GNNExplainer) and produces analyst-friendly reports with optional GPT narratives.
 
-> See [`report_draft.pdf`](report_draft.pdf) for the full research paper.
+📄 **Research Paper**: [report.pdf](report.pdf)
 
 ---
 
@@ -16,17 +16,17 @@ PROVEX explains predictions from a **Temporal Graph Network (TGN)** with the fol
   - Layer 1: 8 attention heads
   - Layer 2: 1 attention head
   - Edge Features: Concatenation of relative time encoding (`rel_t_enc`) and raw message features (`msg`)
-- **Link Predictor**: 3-layer MLP (`Linear` → `Tanh` → `Dropout`) predicting edge labels from source/destination embeddings
+- **Link Predictor**: 4-layer MLP (`Linear` → `Tanh` → `Dropout`) predicting edge labels from source/destination embeddings
 - **Memory**: TGN memory module with `LastAggregator` for incoming messages
 - **Dataset**: Optimized for DARPA CADETS provenance graphs
 
 ### Explainers
 
-| Explainer        | Goal                                                     | Key Parameters                              |
-| ---------------- | -------------------------------------------------------- | ------------------------------------------- |
-| **GraphMask**    | Learn sparse binary edge mask preserving predictions     | 200 epochs, lr=0.01, penalty=5.0            |
-| **VA-TG**        | Variational mask distribution capturing uncertainty      | 200 epochs, 10 samples/step, KL weight=1e-3 |
-| **GNNExplainer** | Compact subgraph + feature subset via Mutual Information | 200 epochs, lr=0.01                         |
+| Explainer        | Goal                                                     | Key Parameters                                    |
+| ---------------- | -------------------------------------------------------- | ------------------------------------------------- |
+| **GraphMask**    | Learn sparse binary edge mask preserving predictions     | 200 epochs, lr=0.01, sparsity/entropy weight=1e-3 |
+| **VA-TG**        | Variational mask distribution capturing uncertainty      | 200 epochs, 10 samples/step, KL weight=1e-3       |
+| **GNNExplainer** | Compact subgraph + feature subset via Mutual Information | 200 epochs, lr=0.01                               |
 
 ---
 
@@ -247,11 +247,14 @@ tail -f artifact/explanations/temporal_explanations.log
 
 ## 9) Environment Variables
 
-| Variable                   | Purpose                                       |
-| -------------------------- | --------------------------------------------- |
-| `PROVEX_EXPLANATION_JSON`  | Path to explanation JSON for report/dashboard |
-| `PROVEX_NODE_MAPPING_JSON` | Node mapping JSON (labels)                    |
-| `OPENAI_API_KEY`           | Enables GPT narrative in reports              |
+| Variable                    | Purpose                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `PROVEX_NODE_MAPPING_JSON`  | Node mapping JSON path (labels)                         |
+| `OPENAI_API_KEY`            | Enables GPT narrative in reports                        |
+| `PROVEX_CONTEXT_DEVICE`     | Tensor storage mode: `gpu`, `cpu`, `cpu_pin`, or `auto` |
+| `PROVEX_EXPLAIN_WARMUP_SEC` | Warmup margin in seconds (default: 7200)                |
+| `PROVEX_CONTEXT_GPU_BUFFER` | GPU buffer threshold in bytes (default: 512MB)          |
+| `PROVEX_CUDA_LOG_EVERY`     | CUDA memory logging frequency (0 = disabled)            |
 
 ---
 
@@ -259,4 +262,4 @@ tail -f artifact/explanations/temporal_explanations.log
 
 - **Threshold Semantics**: The event-loss threshold is derived from per-event losses. The dashboard's "Top nodes" chart shows average loss per node with a dashed vertical line indicating the event-loss threshold context.
 - **Device Management**: GPU memory is checked before each explainer batch (~512MB free required). Falls back to CPU if insufficient.
-- **Pandas-Free Dashboard**: Visualizations use Plotly with plain Python lists/dicts for reliability.
+- **Dashboard**: Visualizations use Plotly with Pandas for data aggregation and NetworkX for graph layout.
