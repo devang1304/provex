@@ -1,0 +1,377 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{hyperref}
+
+% Every number in this paper is generated from results/ by scripts/make_tables.py.
+\input{generated/numbers}
+
+\begin{document}
+
+\title{PROVEX: Faithful, Temporal Explanations\\for a Provenance-Based Intrusion Detector}
+
+\author{\IEEEauthorblockN{Devang Dhanuka}
+\IEEEauthorblockA{\textit{Department of Software Engineering} \\
+\textit{Rochester Institute of Technology}\\
+Rochester, NY \\
+dd9098@rit.edu}
+\and
+\IEEEauthorblockN{Nidhi Rastogi}
+\IEEEauthorblockA{\textit{Department of Software Engineering} \\
+\textit{Rochester Institute of Technology}\\
+Rochester, NY \\
+nxrvse@rit.edu}
+}
+
+\maketitle
+
+\noindent\fbox{\parbox{\dimexpr\columnwidth-2\fboxsep-2\fboxrule}{\small
+\textbf{Revision note (v2).} Version~1 of this paper (arXiv:2512.18199v1) reported results that are
+not supported by its data or code. Its Tables~II--IV, its case study and its appendix output referred
+to provenance edges that do not exist in DARPA TC E3 CADETS, such as \texttt{nginx}$\rightarrow$\texttt{bash}
+and \texttt{/tmp/lib.so}. Its fidelity metrics (Table~III) were incompatible with the implementation.
+We withdraw those results. The v1 implementation also had defects:
+\begin{itemize}
+\item explained edges were labelled with the wrong node identifiers;
+\item every explainer optimised for the event looking \emph{normal};
+\item the explained scores differed from the detector's.
+\end{itemize}
+Version~2 corrects the method, re-implements every component, and re-measures everything on all
+four CADETS~E3 attacks. Every number in this version is generated from released outputs.
+\texttt{ERRATA.md} in the repository lists each change, and v1 remains tagged for reproducibility.}}
+
+\begin{abstract}
+Provenance-based intrusion detectors built on temporal graph networks (TGNs), such as KAIROS, flag
+system events whose type the model finds improbable given each entity's history. Analysts are not told
+\emph{why} an event was improbable. We show that applying standard GNN explainers to such detectors is
+subtly wrong: they search for evidence that the event looks \emph{normal}. They also ignore the TGN
+memory, which carries most of the history.
+
+PROVEX explains the anomaly score itself. It has three parts:
+\begin{enumerate}
+\item an anomaly-preserving and a counterfactual objective over past events;
+\item an exact, differentiable replay of the TGN memory update, which can delete any past event inside a
+history window (validated against full re-execution);
+\item a variational explainer with a temporal prior whose uncertainty we test for calibration.
+\end{enumerate}
+We also provide a faithful GraphMask for attention-based message passing.
+
+On all four DARPA TC E3 CADETS attacks, with KAIROS retrained over \NumSeeds{} seeds, we report:
+\begin{itemize}
+\item faithfulness against six baselines;
+\item agreement with node-level ground truth;
+\item stability and calibration;
+\item cost.
+\end{itemize}
+We also report a property of the detector that explanation exposes: \FracPriorAlerts{} of alerted
+events remain anomalous with \emph{no} history at all, so no history-based explanation can account
+for them.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Explainable AI, temporal graph networks, provenance, intrusion detection, counterfactual explanation
+\end{IEEEkeywords}
+
+\section{Introduction}
+Provenance-based intrusion detection systems (PIDS) represent system activity as a graph of processes,
+files and sockets, and learn what normal activity looks like~\cite{kairos,unicorn,orthrus,bilot}.
+KAIROS~\cite{kairos} is representative. A temporal graph network (TGN)~\cite{tgn} keeps a memory
+vector per entity and predicts the \emph{type} of each new event from the memories and recent
+neighbourhoods of its two endpoints. The event's anomaly score is the cross-entropy of its true type.
+High-scoring events in 15-minute windows are linked into queues, and an alert is raised when a queue's
+score exceeds a threshold.
+
+An alert alone tells an analyst \emph{that} something is improbable, not \emph{why}. A natural answer
+would identify which past events made the flagged event improbable. Post-hoc GNN explainers such as
+GNNExplainer~\cite{gnnexplainer} and GraphMask~\cite{graphmask} appear to provide this. We argue they
+do not, for two reasons.
+\begin{enumerate}
+\item \textbf{The objective is inverted.} These explainers find the subgraph that best supports the
+  \emph{observed} label. For an anomaly detector that scores $-\log p(\text{observed})$, that is the
+  evidence that the event is normal: the opposite of what explains the alert.
+\item \textbf{They miss the memory.} TGN memory is a recurrent summary of everything an entity has done.
+  Masking only the last-hop neighbourhood leaves the dominant channel unexplained.
+\end{enumerate}
+
+PROVEX addresses both. Our contributions:
+\begin{itemize}
+\item \textbf{Anomaly-faithful objectives} (\S\ref{sec:objectives}). A preserve objective finds a
+  minimal set of past events that keeps the score above the alert threshold. A counterfactual objective
+  finds a minimal set whose removal brings it below the threshold. Both are optimised in loss space with
+  hard-concrete gates and verified by exact deletion.
+\item \textbf{History gating} (\S\ref{sec:history}). We give a differentiable replay of the TGN memory
+  update in evaluation mode, including its last-message aggregation and tie-breaking. A gate on a past
+  event therefore means ``this event never happened''. With binary gates it is exact; we validate it
+  against full re-execution of the detector.
+\item \textbf{Calibrated uncertainty} (\S\ref{sec:variational}). A variational explainer with a temporal
+  prior exports per-event inclusion probabilities, which we compare with exact posteriors obtained by
+  enumeration.
+\item \textbf{A faithful GraphMask for attention layers} (\S\ref{sec:graphmask}), which off-the-shelf
+  implementations do not support.
+\item \textbf{An evaluation} on all four CADETS~E3 attacks (\S\ref{sec:eval}). It covers:
+  \begin{itemize}
+  \item explanations driven by the detector's own alerts, on a KAIROS rebuilt from upstream with fixed seeds;
+  \item node-level ground truth from ORTHRUS/PIDSMaker~\cite{orthrus,bilot};
+  \item faithfulness, stability, calibration and cost;
+  \item an \emph{alert taxonomy} that separates alerts explainable by recent history from alerts driven
+    only by the event-type prior.
+  \end{itemize}
+\end{itemize}
+Code, patches to upstream KAIROS, trained models and all outputs are released.
+
+\section{Related Work}
+\textbf{Provenance-based detection.} StreamSpot~\cite{streamspot} and UNICORN~\cite{unicorn} summarise
+graphs into sketches. HOLMES~\cite{holmes} correlates suspicious information flows with expert rules.
+KAIROS~\cite{kairos} learns per-event anomaly scores with a TGN and reconstructs attack subgraphs by
+community detection over anomalous windows. ORTHRUS~\cite{orthrus} targets \emph{quality of
+attribution}: how much analyst effort an alert costs. Bilot et~al.~\cite{bilot} show that simpler
+detectors match these systems on most DARPA datasets and release common ground truth, which we use.
+
+\textbf{Explaining detections.} ProvExplainer~\cite{provexplainer} distils a GNN detector into
+interpretable surrogates over security-aware subgraph features. ProvX~\cite{provx} searches for minimal
+counterfactual perturbations that flip a GNN-based detection. Our counterfactual objective shares that
+goal for a TGN-based, per-event detector. Its distinguishing elements are the treatment of memory and
+the exactness check.
+
+\textbf{GNN and temporal GNN explainers.} GNNExplainer~\cite{gnnexplainer} learns soft edge masks;
+GraphMask~\cite{graphmask} learns amortised hard-concrete gates with learned baselines;
+PGExplainer~\cite{pgexplainer} amortises mask prediction; CF-GNNExplainer~\cite{cfgnnexplainer} learns
+minimal deletions that flip a prediction. For temporal graphs, T-GNNExplainer~\cite{tgnnexplainer}
+searches subsets of past events with an explorer--navigator scheme, and TempME~\cite{tempme} explains
+with temporal motifs under an information bottleneck. PROVEX differs in what it explains (the
+cross-entropy anomaly score, not a predicted label) and in modelling the memory update exactly.
+\section{Background: How KAIROS Scores Events}
+\label{sec:background}
+A day of audit data is a time-ordered stream of events $e_k=(u_k,v_k,y_k,t_k,\mathbf{r}_k)$. Here
+$u_k,v_k$ are entities, $y_k$ is one of seven event types, and $\mathbf{r}_k$ is a raw message of hashed
+endpoint features plus a one-hot type. KAIROS processes the stream in batches of $B{=}1024$. For a batch,
+a last-neighbour loader gives, for every endpoint, its $K$ most recent interactions as in-edges. A
+two-layer TransformerConv embeds the endpoints. Its inputs are memory states $\mathbf{s}$, and its edge
+features are a cosine time encoding of $t_{\text{last}}(\text{src})-t$ concatenated with the raw
+message. An MLP then predicts the type distribution $p(y\mid e)$. The anomaly score is
+$L(e)=-\log p(y_e\mid e)$. Only after scoring does the memory update. Each node aggregates the
+\emph{latest} message of the batch, $[\mathbf{s}_u,\mathbf{s}_c,\mathbf{r},\phi(t-t_{\text{last}})]$, and
+applies a GRU. Memory and loader reset at the start of each day.
+
+Windows close at batch boundaries once 15~minutes have elapsed. Events with $L\ge\tau_w$, where
+$\tau_w=\mu_w+1.5\sigma_w$ over the window, are anomalous. Windows sharing rare anomalous entities are
+linked into queues, and a queue whose score exceeds $\beta$ raises an alert~\cite{kairos}.
+
+\section{What Should an Explanation of an Alert Explain?}
+\label{sec:objectives}
+Let $\mathcal{I}(e)$ be the \emph{items} that can influence $L(e)$:
+\begin{itemize}
+\item the neighbour edges of the event's two-hop computation graph;
+\item the past events inside a history window that updated the memory of the endpoints, or of entities
+  that later fed them (\S\ref{sec:history}).
+\end{itemize}
+An explanation assigns importance to items. We write $L(\mathbf{g})$ for the score when item $i$ is
+kept with gate $g_i\in[0,1]$, so that $L(\mathbf{1})=L(e)$.
+
+\textbf{The standard objective is inverted.} GNNExplainer-style methods in ``phenomenon'' mode minimise
+$\mathrm{CE}(f(G\odot\mathbf m), y_e)$. For a classifier, that finds evidence \emph{for} the predicted
+label. For an anomaly score $L=-\log p(y_e)$, minimising the same quantity finds the items whose
+presence makes the observed type \emph{likely}: the evidence that the event is normal. Fidelity metrics
+in probability space, such as $p_{\text{full}}-p_{\text{drop}}$, are also degenerate for anomalies,
+because $p_{\text{full}}=e^{-L}$ is tiny. For example, $L\ge 5$ already gives $p\le 0.007$.
+
+\textbf{Anomaly-faithful objectives.} We define two objectives with margin $\delta$ and temperature $T$:
+\begin{align}
+\text{preserve:}\quad &\min_{\mathbf g}\ \textstyle\sum_i g_i \ \ \text{s.t.}\ L(\mathbf g)\ge\min(L(\mathbf 1),\tau+\delta),\\
+\text{counterfactual:}\quad &\min_{\mathbf g}\ \textstyle\sum_i (1-g_i) \ \ \text{s.t.}\ L(\mathbf g)\le\tau-\delta.
+\end{align}
+Preserve gives a minimal set of past events sufficient to sustain the alert. Counterfactual gives a
+minimal set whose absence would have prevented it. We relax the constraint violation with
+$T\,\mathrm{softplus}(\cdot/T)$. Softplus keeps gradients alive where a hinge would be flat. Working in
+loss space avoids $-\log(1-p)$, whose gradient vanishes for $p\approx 10^{-11}$.
+
+\textbf{Alert taxonomy.} Some alerts cannot be explained by history at all. We compute three scores:
+\begin{itemize}
+\item $L_\varnothing$: all items removed;
+\item $L_{\text{prior}}$: all memories zeroed and all edges removed, i.e.\ the type prior alone;
+\item the full score.
+\end{itemize}
+An alert is \emph{prior-driven} if $L_{\text{prior}}\ge\tau$. It is \emph{window-explainable} if
+$L_\varnothing<\tau$, so a counterfactual exists inside the window. Otherwise it is
+\emph{long-memory-driven}. A preserve explanation of a prior-driven alert is empty, and a counterfactual
+does not exist. We report these cases rather than optimise them.
+
+\section{Exact, Differentiable History Gating}
+\label{sec:history}
+\textbf{Replay that matches the detector.} PROVEX re-executes KAIROS exactly. It uses the same batch
+partition, per-day resets, window boundaries and per-event losses, verified bit-for-bit against the
+detector's own window files. For each event to explain, it captures two things. The first is the
+\emph{exact receptive field}: the in-edges of $T=\{u,v\}\cup N_1$, where $N_1$ are the in-neighbours of
+$u,v$; this is exactly what a two-layer convolution reads. The second is the memory-update history
+inside a window of $H$ batches. Every reported item is keyed by its absolute event index and global
+node identifiers.
+
+\textbf{Influence closure.} The memory of $u$ at the event depends on the memories of the counterparts
+$c$ that sent it messages earlier. We therefore replay the memory of the closure $S$, computed by
+walking batches backwards: if $i\in S$ and $(i,c)$ occurs in batch $b$, then $c$ joins $S$ for all
+earlier batches. $S$ is capped at 64 nodes, and a truncated closure is flagged.
+
+\textbf{Gated last-message aggregation.} For a node $i\in S$ in batch $b$, let its candidate messages
+be ordered as PyG resolves ties: by time descending, then by store order. With gates $g_k$ we set
+\[
+w_k=g_k\prod_{j<k}(1-g_j),\qquad P=1-\prod_{k\in\text{current}}(1-g_k),
+\]
+\[
+\mathbf s_i'=P\,\frac{\sum_k w_k\,\mathrm{GRU}(\mathbf m_k,\mathbf s_i)}{\sum_k w_k}+(1-P)\,\mathbf s_i .
+\]
+With binary gates this is exactly the detector's update. Deleting the latest message promotes the
+next-latest. Deleting all of a node's current events leaves it out of the batch, so it is not updated.
+Last-update times follow the hard gates without gradient: KAIROS encodes time as $\cos(\mathbf w\,\Delta t)$
+with $\Delta t\sim10^{12}$\,ns, so gradients through a relaxed timestamp are noise. We also subtract
+timestamps in 64-bit integers before converting to floating point. Doing it the other way round changes
+logits by more than one nat on real data.
+
+\textbf{Exactness.} With a complete closure, deleting any event in the window reproduces a full
+re-execution of the detector with that event removed. We validate this in two places:
+\begin{itemize}
+\item a synthetic float64 suite, where all \NumExactDeletionsTest{} checked deletions are identical;
+\item real alerts (\S\ref{sec:eval}, E7).
+\end{itemize}
+After a deletion the neighbour loader is not back-filled with older neighbours; this is a stated
+limitation.
+
+\textbf{True edge deletion.} PyG's explanation hook scales messages \emph{after} the attention softmax,
+so a zero mask is not deletion. We rescale each surviving message by the attention mass that remains at
+its target, and zero targets with no surviving in-edges. With binary masks this equals running the
+layer on the pruned graph.
+
+\section{Explainers}
+\label{sec:variational}
+\label{sec:graphmask}
+\textbf{Joint explainer.} The joint explainer uses hard-concrete gates~\cite{louizos} over all items. It
+minimises expected $L_0$ under the preserve or counterfactual constraint, with a persistent Lagrange
+multiplier. The result is checked by exact hard deletion. If it is invalid, a greedy repair adds or
+removes items in score order, and we report the repair.
+
+\textbf{Variational temporal explainer.} We place a Gaussian posterior over the gate logits,
+$\zeta_k\sim\mathcal N(\mu_k,\sigma_k^2)$, with $m_k=\mathrm{clip}(1.2\,\sigma(\zeta_k)-0.1)$. The
+\emph{temporal prior} is $\mathcal N(a-\kappa\log(1+\Delta t_k/60\text{s}),1)$, which makes older events
+a priori less likely to be needed. The likelihood $\sigma((L(\mathbf m)-\tau)/T)$ is the probability
+that the alert holds. We maximise the ELBO and export, per item, the posterior inclusion probability
+$\pi_k=\Phi(\mu_k/\sigma_k)$, $\mathbb E[m_k]$ and $\mathrm{Std}[m_k]$. For calibration, we enumerate all
+$2^n$ binary masks over the $n$ most uncertain items ($n\le 12$) to obtain exact posterior marginals,
+and report expected calibration error.
+
+\textbf{GraphMask for TransformerConv.} Off-the-shelf GraphMask hooks assume a layer's propagate receives
+node features. TransformerConv instead passes query, key and value, so those hooks fail on it. Our
+version follows GraphMask~\cite{graphmask}:
+\begin{itemize}
+\item amortised per-layer gate networks read $(\mathbf q_i,\mathbf k_j{+}\mathbf e,\mathbf v_j{+}\mathbf e)$;
+\item a gated-off edge has its attention score and value replaced by learned baselines, with the softmax
+  recomputed;
+\item training minimises $L_0$ subject to $|L_{\text{masked}}-L|/\max(L,1)\le 5\%$ on validation-day
+  alerts.
+\end{itemize}
+It answers which neighbour edges the model \emph{needs}, and does not cover memory.
+
+\textbf{Baselines.} We compare against the following, all on the same items:
+\begin{itemize}
+\item random, recency, attention rollout, gradient, integrated gradients and leave-one-out occlusion;
+\item PyG GNNExplainer with our preserve objective (neighbour edges only);
+\item the v1 configuration (GNNExplainer minimising cross-entropy of the true type), as a documented
+  counter-example.
+\end{itemize}
+\section{Evaluation}
+\label{sec:eval}
+\textbf{Data and detector.} We use DARPA TC Engagement~3 CADETS~\cite{darpa}: day graphs for 2018-04-02
+to 04-13, and four attacks (04-06, 04-11, 04-12 and 04-13). Node-level ground truth comes from
+ORTHRUS/PIDSMaker~\cite{orthrus,bilot} and is mapped to KAIROS nodes by name, which is how KAIROS keys
+them.
+
+We rebuild KAIROS from upstream at a pinned commit, with documented patches: seeds, all test days, all
+four attacks, and PyG~2.7 compatibility. We use the upstream hyper-parameters and train on 04-02 to
+04-04 with \NumSeeds{} seeds. Days 04-05 and 04-10 are used for validation and thresholds, and the rest
+for testing.
+
+\textbf{What is explained.} We explain the events KAIROS alerts on. These are the anomalous events
+($L\ge\tau_w$) in every window of every alerted queue. For each window we take the top \TopN{} events by
+score plus a uniform sample of \SampleN{} more, covering true and false positives alike.
+
+\textbf{Experiments.}
+\begin{itemize}
+\item E1: detection.
+\item E2: replay parity with the detector.
+\item E3: explanations for every alert.
+\item E4: faithfulness, measured by deletion/insertion curves, alert-flip and alert-keep rates at
+  $k\in\{1,3,5,10,20\}$, and minimal counterfactual size.
+\item E5: agreement with ground-truth entities.
+\item E6: stability across seeds, cross-explainer agreement, and uncertainty calibration.
+\item E7: replay exactness against full re-execution.
+\item E8: runtime and memory.
+\end{itemize}
+
+\input{generated/tab_detection}
+\input{generated/tab_taxonomy}
+\input{generated/tab_faithfulness}
+\input{generated/tab_groundtruth}
+\input{generated/tab_stability_calibration}
+\input{generated/tab_runtime}
+\input{generated/results_text}
+
+\subsection{Case Studies}
+\input{generated/case_studies}
+
+\section{Limitations}
+\begin{itemize}
+\item \textbf{Scope of history.} History gating covers a window of $H$ batches and a capped influence
+  closure. Truncated closures are flagged, and E7 measures their error. Deleted events do not back-fill
+  the neighbour loader.
+\item \textbf{One detector, one host.} We study KAIROS on CADETS~E3 only. DARPA~E3 data is small and
+  well studied~\cite{bilot}, and conclusions may not transfer to other datasets or detectors.
+\item \textbf{Names, not UUIDs.} Ground truth is mapped by entity name. KAIROS merges entities with the
+  same name, such as all \texttt{nginx} processes, so entity-level ground truth is coarser than
+  UUID-level.
+\item \textbf{No user study.} We measure faithfulness and agreement with ground truth, not analyst
+  benefit.
+\item \textbf{Nondeterminism.} GPU training is seeded but not bit-reproducible, because scatter kernels
+  are nondeterministic. We therefore replay and explain on CPU and report variation across seeds.
+\end{itemize}
+
+\section{Conclusion}
+Explaining a temporal-graph anomaly detector requires explaining the \emph{anomaly score} and the
+\emph{memory}, not a label and a neighbourhood. PROVEX provides anomaly-faithful objectives, exact
+history gating, and calibrated uncertainty, and evaluates them on every alert of a rebuilt KAIROS. The
+same analysis shows how many alerts no history can explain.
+
+\section*{Reproducibility}
+\begin{itemize}
+\item Code: \url{https://github.com/devang1304/provex}, tag \texttt{\ReleaseTag}.
+\item Patches to upstream KAIROS (commit \texttt{0e0b633}) are applied by \texttt{kairos/setup\_upstream.sh}.
+\item Results, models and logs are archived at \ReleaseDOI.
+\item Hardware: \HardwareCPU{} for replay and explanation, and \HardwareGPU{} for training.
+\item Every table is produced by \texttt{scripts/make\_tables.py}.
+\end{itemize}
+
+\begin{thebibliography}{00}
+\bibitem{kairos} Z.~Cheng, Q.~Lv, J.~Liang, Y.~Wang, D.~Sun, T.~Pasquier, and X.~Han, ``KAIROS: Practical intrusion detection and investigation using whole-system provenance,'' in \emph{IEEE S\&P}, 2024.
+\bibitem{tgn} E.~Rossi, B.~Chamberlain, F.~Frasca, D.~Eynard, F.~Monti, and M.~Bronstein, ``Temporal graph networks for deep learning on dynamic graphs,'' in \emph{ICML Workshop on Graph Representation Learning}, 2020.
+\bibitem{unicorn} X.~Han, T.~Pasquier, A.~Bates, J.~Mickens, and M.~Seltzer, ``UNICORN: Runtime provenance-based detector for advanced persistent threats,'' in \emph{NDSS}, 2020.
+\bibitem{orthrus} B.~Jiang \emph{et~al.}, ``ORTHRUS: Achieving high quality of attribution in provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025.
+\bibitem{bilot} T.~Bilot, B.~Jiang, Z.~Li, N.~El~Madhoun, K.~Al~Agha, A.~Zouaoui, and T.~Pasquier, ``Sometimes simpler is better: A comprehensive analysis of state-of-the-art provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025.
+\bibitem{streamspot} E.~Manzoor, S.~M.~Milajerdi, and L.~Akoglu, ``Fast memory-efficient anomaly detection in streaming heterogeneous graphs,'' in \emph{KDD}, 2016.
+\bibitem{holmes} S.~M.~Milajerdi, R.~Gjomemo, B.~Eshete, R.~Sekar, and V.~N.~Venkatakrishnan, ``HOLMES: Real-time APT detection through correlation of suspicious information flows,'' in \emph{IEEE S\&P}, 2019.
+\bibitem{provexplainer} K.~Mukherjee \emph{et~al.}, ``Interpreting GNN-based IDS detections using provenance graph structural features,'' arXiv:2306.00934, 2023.
+\bibitem{provx} W.~Wu \emph{et~al.}, ``ProvX: Generating counterfactual-driven attack explanations for provenance-based detection,'' arXiv:2508.06073, 2025.
+\bibitem{gnnexplainer} R.~Ying, D.~Bourgeois, J.~You, M.~Zitnik, and J.~Leskovec, ``GNNExplainer: Generating explanations for graph neural networks,'' in \emph{NeurIPS}, 2019.
+\bibitem{graphmask} M.~S.~Schlichtkrull, N.~De~Cao, and I.~Titov, ``Interpreting graph neural networks for NLP with differentiable edge masking,'' in \emph{ICLR}, 2021.
+\bibitem{pgexplainer} D.~Luo \emph{et~al.}, ``Parameterized explainer for graph neural network,'' in \emph{NeurIPS}, 2020.
+\bibitem{cfgnnexplainer} A.~Lucic, M.~ter~Hoeve, G.~Tolomei, M.~de~Rijke, and F.~Silvestri, ``CF-GNNExplainer: Counterfactual explanations for graph neural networks,'' in \emph{AISTATS}, 2022.
+\bibitem{tgnnexplainer} W.~Xia, M.~Lai, C.~Shan, Y.~Zhang, X.~Dai, X.~Li, and D.~Li, ``Explaining temporal graph models through an explorer-navigator framework,'' in \emph{ICLR}, 2023.
+\bibitem{tempme} J.~Chen and R.~Ying, ``TempME: Towards the explainability of temporal graph neural networks via motif discovery,'' in \emph{NeurIPS}, 2023.
+\bibitem{louizos} C.~Louizos, M.~Welling, and D.~P.~Kingma, ``Learning sparse neural networks through $L_0$ regularization,'' in \emph{ICLR}, 2018.
+\bibitem{darpa} DARPA Transparent Computing, ``Engagement 3 data release,'' \url{https://github.com/darpa-i2o/Transparent-Computing}, 2018.
+\end{thebibliography}
+
+\end{document}
