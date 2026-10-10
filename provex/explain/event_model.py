@@ -42,8 +42,8 @@ class EventModel(nn.Module):
             t_ref = int(cap.edge_t.min()) if cap.edge_t.numel() else cap.t
         self.t_ref = t_ref
         self.x = cap.x.to(dev, dtype)
-        self.lu_off = (cap.lu.to(torch.float64) - t_ref).to(dev)
-        self.edge_t_off = (cap.edge_t.to(torch.float64) - t_ref).to(dev)
+        # subtract in int64 first: ns timestamps (~1.5e18) are not exact in float64, and the KAIROS
+        self.edge_t_off = (cap.edge_t - t_ref).to(torch.float64).to(dev)
         self.edge_msg = cap.edge_msg.to(dev, dtype)
         self.ei = cap.edge_index.to(dev)
         self.y = torch.tensor([cap.y], device=dev)

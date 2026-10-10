@@ -78,6 +78,17 @@ class JointMaskExplainer:
         ones = torch.ones(n, dtype=em.dtype, device=em.device)
         with torch.no_grad():
             L_full = float(em.loss(ones, hard=True))
+            L_floor = float(em.loss(torch.zeros_like(ones), hard=True))
+        intrinsic = L_floor >= tau        # alert holds even with every item removed
+        if intrinsic:
+            # preserve: the minimal sustaining set is empty; counterfactual: no item set can flip
+            # the alert. Report it instead of optimising (context does not explain this anomaly).
+            nan = [float("nan")] * n
+            return Explanation(
+                method="joint" if self.history else "joint-edges", mode=self.mode, items=em.items.tolist(),
+                scores=nan, selected=[], valid=(self.mode == "preserve"), repaired=0, L_full=L_full,
+                L_selected=L_floor, tau=tau, runtime_s=time.perf_counter() - t0,
+                extra={"intrinsic": True, "L_floor": L_floor, "cf_feasible": False, "n_items": n})
         log_alpha = torch.full((n,), 3.0, dtype=em.dtype, device=em.device, requires_grad=True)
         opt = torch.optim.Adam([log_alpha], lr=self.lr)
         lam = 1.0
@@ -107,7 +118,8 @@ class JointMaskExplainer:
             items=em.items.tolist(), scores=imp.tolist(),
             selected=em.items[sel_mask.cpu()].tolist(), valid=valid, repaired=repaired,
             L_full=L_full, L_selected=L_sel, tau=tau, runtime_s=time.perf_counter() - t0,
-            extra={"lambda": lam, "n_items": n, "n_active": int(active.sum())})
+            extra={"lambda": lam, "n_items": n, "n_active": int(active.sum()), "intrinsic": False,
+                   "L_floor": L_floor, "cf_feasible": True})
 
     @torch.no_grad()
     def _check_and_repair(self, em: EventModel, keep: Tensor, imp: Tensor, tau: float, active: Tensor):

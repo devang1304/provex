@@ -47,7 +47,7 @@ class FunctionalTGN:
         self.r_pos = {n: k for k, n in enumerate(self.R)}
         t_ref = hist.t_ref
         self.mem0 = hist.mem0.to(dev, dtype)
-        self.lu0 = (hist.lu0.to(torch.float64) - t_ref).to(dev)
+        self.lu0 = (hist.lu0 - t_ref).to(torch.float64).to(dev)   # int64 subtraction first (exact)
         # Precompute per step: ordered candidate tensors.
         self.plan: List[List[dict]] = []
         for batch_steps in hist.steps:
@@ -96,8 +96,13 @@ class FunctionalTGN:
                 presence = 1 - torch.prod(torch.where(p["current"], 1 - gk, one))
                 s = w.sum().clamp_min(1e-30)
                 new_mem = presence * (w.unsqueeze(-1) * H).sum(0) / s + (1 - presence) * pre_mem[i]
-                pd = presence.double()
-                new_lu = pd * (w.double() * p["t_off"]).sum() / s.double() + (1 - pd) * pre_lu[i]
+                # last_update follows the HARD gates and carries no gradient: KAIROS encodes time as
+                # cos(w * dt) with dt ~ 1e12 ns, so gradients through a soft timestamp are noise.
+                with torch.no_grad():
+                    gh = (gk > 0.5).to(torch.float64)
+                    wh = gh * torch.cumprod(torch.cat([gh.new_ones(1), 1 - gh[:-1]]), 0)
+                    ph = 1 - torch.prod(torch.where(p["current"], 1 - gh, gh.new_ones(())))
+                    new_lu = (ph * (wh * p["t_off"]).sum() / wh.sum().clamp_min(1e-30) + (1 - ph) * pre_lu[i]).detach()
                 mem[i], lu[i] = new_mem, new_lu
                 if check and g is None:
                     st = p["step"]
