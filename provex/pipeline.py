@@ -160,6 +160,9 @@ def cmd_explain(a):
                           "n_anomalous_in_window": len(evs), "gt_window": al.is_gt_attack_window}
     if a.max_events:
         targets = targets[:a.max_events]
+    if a.shard:
+        i, n = (int(x) for x in a.shard.split("/"))
+        targets = targets[i::n]
     log(f"{a.day}: {len(targets)} target events; capturing (CPU replay)")
     t0 = time.perf_counter()
     caps = KairosReplayer(memory, gnn, lp, hp).pass2(data, targets, history_batches=a.history_batches)
@@ -171,12 +174,17 @@ def cmd_explain(a):
         graphmask.load_state_dict(torch.load(a.graphmask, map_location=dev))
     dtype = getattr(torch, a.dtype)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    fout = open(out / f"explanations_{a.day}.jsonl", "a", encoding="utf-8")
+    suffix = f"_shard{a.shard.replace('/', 'of')}" if a.shard else ""
+    fout = open(out / f"explanations_{a.day}{suffix}.jsonl", "a", encoding="utf-8")
     methods = set(a.methods.split(","))
     for i, ev in enumerate(targets):
         cap = caps[ev]; cap.tau = tau_of[ev]
         em = EventModel(memory, gnn, lp, cap, dtype=dtype, device=dev)
         exclude = {cap.src, cap.dst}
+        if a.only_class:
+            ch0 = M.channel_decomposition(em)
+            if M.alert_class(ch0, cap.tau) != a.only_class:
+                continue
         rec = {"event": event_record(cap, data, names, a.day), "origin": origin[ev],
                "channels": (ch := M.channel_decomposition(em)), "alert_class": M.alert_class(ch, cap.tau),
                "n_items": em.num_items,
@@ -186,14 +194,77 @@ def cmd_explain(a):
             set_seed(seed)
             for ex in _run_methods(em, cap.tau, data, methods, seed, graphmask):
                 mets = _metrics_for(em, ex, cap.tau, data, gt, exclude)
-                rec["explanations"].append(explanation_record(
+                if a.calibration and ex.method == "variational" and rec["alert_class"] == "window":
+                    from .evaluate.calibration import posterior_calibration
+                    mets["calibration"] = posterior_calibration(em, ex, cap.tau, n=a.calibration_n)
+                er = explanation_record(
                     cap, ex, data, names, is_edge=em.is_edge_item.tolist(), is_hist=em.is_history_item.tolist(),
-                    metrics=mets, seed=seed))
+                    metrics=mets, seed=seed)
+                if a.full_scores:
+                    er["items_all"], er["scores_all"] = ex.items, ex.scores
+                rec["explanations"].append(er)
         fout.write(json.dumps(rec) + "\n"); fout.flush()
         log(f"[{i + 1}/{len(targets)}] ev {ev} L={cap.loss_batch:.2f} tau={cap.tau:.2f} items={em.num_items} "
             f"peak RSS {peak_rss_mb():.0f} MB" + (f", GPU peak {torch.cuda.max_memory_allocated() / 2**20:.0f} MB"
                                                     if dev.type == "cuda" else ""))
     fout.close()
+
+
+# ---------------------------------------------------------------------------- local-vs-full (E7)
+def _lvf_case(args):
+    ckpt, day_file, ev, deleted, bs = args
+    from .evaluate.local_vs_full import full_replay
+    memory, gnn, lp, hp = load_checkpoint(ckpt, "cpu")
+    data = load_day(day_file)
+    L, _, _ = full_replay(memory, gnn, lp, hp, data, deleted, ev, batch_size=bs)
+    return ev, sorted(deleted), L
+
+
+def cmd_local_vs_full(a):
+    """Compare PROVEX deletion (functional replay + no-backfill) with a full re-execution of the
+    detector with the same events removed, on real alerts."""
+    import multiprocessing as mp
+    from scipy.stats import spearmanr
+    set_seed(0)
+    memory, gnn, lp, hp = load_checkpoint(a.ckpt, "cpu")
+    data = load_day(a.day_file)
+    recs = [json.loads(l) for l in open(a.explanations, encoding="utf-8") if l.strip()]
+    recs = [r for r in recs if r["alert_class"] == "window"][:a.max_alerts]
+    targets = [r["event"]["event"] for r in recs]
+    caps = KairosReplayer(memory, gnn, lp, hp).pass2(data, targets, history_batches=a.history_batches)
+    rng = np.random.default_rng(0)
+    cases, functional = [], {}
+    for r in recs:
+        ev = r["event"]["event"]; cap = caps[ev]; cap.tau = r["event"]["tau"]
+        em = EventModel(memory, gnn, lp, cap)
+        ex = next((x for x in r["explanations"] if x["method"] == "joint-cf"), None) or \
+            next(x for x in r["explanations"] if x["method"] == "occlusion")
+        ranked = [it["ev"] for it in ex["top_items"]]
+        for k in (1, 5, 20):
+            for kind, dels in (("top", ranked[:k]), ("random", rng.choice(em.items.numpy(), size=min(k, em.num_items), replace=False).tolist())):
+                g = torch.ones(em.num_items, dtype=em.dtype)
+                for d in dels:
+                    if d in em.item_pos:
+                        g[em.item_pos[d]] = 0
+                Lf = float(em.loss(g, hard=True))
+                functional[(ev, tuple(sorted(dels)))] = (Lf, cap.loss_batch, kind, k, cap.hist.exact_scope)
+                cases.append((a.ckpt, a.day_file, ev, dels, 1024))
+    log(f"local-vs-full: {len(cases)} full replays on {a.workers} workers")
+    with mp.get_context("spawn").Pool(a.workers) as pool:
+        full = pool.map(_lvf_case, cases)
+    rows = []
+    for ev, dels, Lt in full:
+        Lf, L0, kind, k, exact = functional[(ev, tuple(dels))]
+        rows.append({"event": ev, "k": k, "kind": kind, "L_orig": L0, "L_functional": Lf, "L_full_replay": Lt,
+                     "exact_scope": exact})
+    d_true = np.array([r["L_full_replay"] - r["L_orig"] for r in rows])
+    d_f = np.array([r["L_functional"] - r["L_orig"] for r in rows])
+    rel = np.abs(d_f - d_true) / np.maximum(np.abs(d_true), 1e-3)
+    out = {"n": len(rows), "median_rel_err": float(np.median(rel)), "p90_rel_err": float(np.quantile(rel, 0.9)),
+           "spearman": float(spearmanr(d_f, d_true).statistic), "rows": rows}
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.out).write_text(json.dumps(out, indent=1))
+    log(f"local-vs-full: median rel err {out['median_rel_err']:.3f}, Spearman {out['spearman']:.3f}")
 
 
 # ---------------------------------------------------------------------------- graphmask-fit
@@ -234,6 +305,9 @@ def main(argv=None):
     s.add_argument("--seeds", default="0"); s.add_argument("--device", default="cpu"); s.add_argument("--dtype", default="float32")
     s.add_argument("--top-n", type=int, default=25); s.add_argument("--sample-n", type=int, default=25)
     s.add_argument("--max-events", type=int, default=0); s.add_argument("--history-batches", type=int, default=64)
+    s.add_argument("--full-scores", action="store_true"); s.add_argument("--calibration", action="store_true")
+    s.add_argument("--calibration-n", type=int, default=10); s.add_argument("--shard", default="", help="i/n")
+    s.add_argument("--only-class", default="", help="restrict to alert class (e.g. window), for E6 subsets")
     s.set_defaults(fn=cmd_explain)
     s = sub.add_parser("graphmask-fit")
     for k in ("--ckpt", "--day-file", "--day", "--out"):
@@ -241,6 +315,11 @@ def main(argv=None):
     s.add_argument("--device", default="cpu"); s.add_argument("--epochs", type=int, default=20)
     s.add_argument("--per-window", type=int, default=20); s.add_argument("--max-events", type=int, default=400)
     s.add_argument("--seed", type=int, default=0); s.set_defaults(fn=cmd_graphmask_fit)
+    s = sub.add_parser("local-vs-full")
+    for k in ("--ckpt", "--day-file", "--explanations", "--out"):
+        s.add_argument(k, required=True)
+    s.add_argument("--max-alerts", type=int, default=30); s.add_argument("--workers", type=int, default=4)
+    s.add_argument("--history-batches", type=int, default=64); s.set_defaults(fn=cmd_local_vs_full)
     a = p.parse_args(argv)
     a.fn(a)
 
