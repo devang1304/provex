@@ -160,3 +160,6 @@ secrets.toml
 # Misc
 *.sage.py
 cython_debug/
+
+# v2: tracked helper scripts and generated-table sources
+!scripts/
