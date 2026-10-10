@@ -42,7 +42,9 @@ class EventModel(nn.Module):
             t_ref = int(cap.edge_t.min()) if cap.edge_t.numel() else cap.t
         self.t_ref = t_ref
         self.x = cap.x.to(dev, dtype)
-        # subtract in int64 first: ns timestamps (~1.5e18) are not exact in float64, and the KAIROS
+        # Subtract in int64 first. ns timestamps (~1.5e18) are not exact in float64, and the KAIROS
+        # time encoding cos(w * dt) with dt ~ 1e12 ns turns that rounding into large logit changes.
+        self.lu_off = (cap.lu - t_ref).to(torch.float64).to(dev)
         self.edge_t_off = (cap.edge_t - t_ref).to(torch.float64).to(dev)
         self.edge_msg = cap.edge_msg.to(dev, dtype)
         self.ei = cap.edge_index.to(dev)

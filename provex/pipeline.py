@@ -178,7 +178,8 @@ def cmd_explain(a):
         em = EventModel(memory, gnn, lp, cap, dtype=dtype, device=dev)
         exclude = {cap.src, cap.dst}
         rec = {"event": event_record(cap, data, names, a.day), "origin": origin[ev],
-               "channels": M.channel_decomposition(em), "n_items": em.num_items,
+               "channels": (ch := M.channel_decomposition(em)), "alert_class": M.alert_class(ch, cap.tau),
+               "n_items": em.num_items,
                "n_edge_items": int(em.is_edge_item.sum()), "n_history_items": int(em.is_history_item.sum()),
                "gt_endpoint": (gt is not None) and bool(exclude & gt), "explanations": []}
         for seed in [int(s) for s in a.seeds.split(",")]:

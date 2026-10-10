@@ -62,9 +62,22 @@ def channel_decomposition(em: EventModel) -> Dict[str, float]:
         for r in (em.cap.src_local, em.cap.dst_local):
             em.x[r] = 0
         out["memory_zero_uv"] = float(em.loss(None))
+        em.x = torch.zeros_like(x0)
+        out["prior_only"] = float(em.loss(zeros, hard=True, history=False))   # no memory, no edges
     finally:
         em.x = x0
     return out
+
+
+def alert_class(ch: Dict[str, float], tau: float) -> str:
+    """prior: anomalous with no memory and no edges (event-type prior alone);
+    window: some removal inside the history window drops it below tau (counterfactual exists);
+    long_memory: neither, so the anomaly comes from memory accumulated before the window."""
+    if ch["prior_only"] >= tau:
+        return "prior"
+    if ch["nothing"] < tau:
+        return "window"
+    return "long_memory"
 
 def normalised_dloss(L_full: float, L_k: float, L_floor: float) -> float:
     den = L_full - L_floor

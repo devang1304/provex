@@ -103,8 +103,16 @@ def load_checkpoint(path: str | Path, device: str | torch.device = "cpu", *, leg
     """
     path = Path(path)
     obj = torch.load(path, map_location="cpu", weights_only=False)  # trusted local artifact
-    if isinstance(obj, dict) and "hparams" in obj:
-        hp = KairosHParams(**{k: v for k, v in obj["hparams"].items() if k in KairosHParams.__dataclass_fields__})
+    if isinstance(obj, dict) and ("hparams" in obj or "hyperparams" in obj):
+        if "hparams" in obj:
+            hp = KairosHParams(**{k: v for k, v in obj["hparams"].items() if k in KairosHParams.__dataclass_fields__})
+        else:   # models_state.pt written by kairos/patches/04-save-state-dict (upstream conventions)
+            h = obj["hyperparams"]
+            hp = KairosHParams(num_nodes=int(h["max_node_num"]), raw_msg_dim=int(h["raw_msg_dim"]),
+                               memory_dim=int(h["memory_dim"]), time_dim=int(h["time_dim"]),
+                               embedding_dim=int(h["embedding_dim"]), neighbor_size=int(h["neighbor_size"]),
+                               num_edge_types=len(h["include_edge_type"]),
+                               node_embedding_dim=int(h["node_embedding_dim"]), rel_t_sign=1)
         memory, gnn, link_pred = build(hp)
         memory.load_state_dict(obj["memory"])
         gnn.load_state_dict(obj["gnn"])
