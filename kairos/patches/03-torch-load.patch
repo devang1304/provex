@@ -1,0 +1,85 @@
+PROVEX patch 03-torch-load
+Pass weights_only=False to every torch.load (trusted local artifacts) so that torch>=2.6 can load the graphs, models and queue lists.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/evaluation.py b/evaluation.py
+index 5d4a2df..f1624d7 100644
+--- a/evaluation.py
++++ b/evaluation.py
+@@ -103,7 +103,7 @@ if __name__ == "__main__":
+ 
+     # Validation date
+     anomalous_queue_scores = []
+-    history_list = torch.load(f"{artifact_dir}/graph_4_5_history_list")
++    history_list = torch.load(f"{artifact_dir}/graph_4_5_history_list", weights_only=False)
+     for hl in history_list:
+         anomaly_score = 0
+         for hq in hl:
+@@ -134,7 +134,7 @@ if __name__ == "__main__":
+     for f in filelist:
+         pred_label[f] = 0
+ 
+-    history_list = torch.load(f"{artifact_dir}/graph_4_6_history_list")
++    history_list = torch.load(f"{artifact_dir}/graph_4_6_history_list", weights_only=False)
+     for hl in history_list:
+         anomaly_score = 0
+         for hq in hl:
+@@ -152,7 +152,7 @@ if __name__ == "__main__":
+                 pred_label[i] = 1
+             logger.info(f"Anomaly score: {anomaly_score}")
+ 
+-    history_list = torch.load(f"{artifact_dir}/graph_4_7_history_list")
++    history_list = torch.load(f"{artifact_dir}/graph_4_7_history_list", weights_only=False)
+     for hl in history_list:
+         anomaly_score = 0
+         for hq in hl:
+diff --git a/test.py b/test.py
+index aaa6967..380dc00 100644
+--- a/test.py
++++ b/test.py
+@@ -154,13 +154,13 @@ def test(inference_data,
+ 
+ def load_data():
+     # graph_4_3 - graph_4_5 will be used to initialize node IDF scores.
+-    graph_4_3 = torch.load(graphs_dir + "/graph_4_3.TemporalData.simple").to(device=device)
+-    graph_4_4 = torch.load(graphs_dir + "/graph_4_4.TemporalData.simple").to(device=device)
+-    graph_4_5 = torch.load(graphs_dir + "/graph_4_5.TemporalData.simple").to(device=device)
++    graph_4_3 = torch.load(graphs_dir + "/graph_4_3.TemporalData.simple", weights_only=False).to(device=device)
++    graph_4_4 = torch.load(graphs_dir + "/graph_4_4.TemporalData.simple", weights_only=False).to(device=device)
++    graph_4_5 = torch.load(graphs_dir + "/graph_4_5.TemporalData.simple", weights_only=False).to(device=device)
+ 
+     # Testing set
+-    graph_4_6 = torch.load(graphs_dir + "/graph_4_6.TemporalData.simple").to(device=device)
+-    graph_4_7 = torch.load(graphs_dir + "/graph_4_7.TemporalData.simple").to(device=device)
++    graph_4_6 = torch.load(graphs_dir + "/graph_4_6.TemporalData.simple", weights_only=False).to(device=device)
++    graph_4_7 = torch.load(graphs_dir + "/graph_4_7.TemporalData.simple", weights_only=False).to(device=device)
+ 
+     return [graph_4_3, graph_4_4, graph_4_5, graph_4_6, graph_4_7]
+ 
+@@ -176,7 +176,7 @@ if __name__ == "__main__":
+     graph_4_3, graph_4_4, graph_4_5, graph_4_6, graph_4_7 = load_data()
+ 
+     # load trained model
+-    memory, gnn, link_pred, neighbor_loader = torch.load(f"{models_dir}/models.pt",map_location=device)
++    memory, gnn, link_pred, neighbor_loader = torch.load(f"{models_dir}/models.pt",map_location=device, weights_only=False)
+ 
+     # Reconstruct the edges in each day
+     test(inference_data=graph_4_3,
+diff --git a/train.py b/train.py
+index 089c611..a2f2074 100644
+--- a/train.py
++++ b/train.py
+@@ -78,9 +78,9 @@ def train(train_data,
+     return total_loss / train_data.num_events
+ 
+ def load_train_data():
+-    graph_4_2 = torch.load(graphs_dir + "/graph_4_2.TemporalData.simple").to(device=device)
+-    graph_4_3 = torch.load(graphs_dir + "/graph_4_3.TemporalData.simple").to(device=device)
+-    graph_4_4 = torch.load(graphs_dir + "/graph_4_4.TemporalData.simple").to(device=device)
++    graph_4_2 = torch.load(graphs_dir + "/graph_4_2.TemporalData.simple", weights_only=False).to(device=device)
++    graph_4_3 = torch.load(graphs_dir + "/graph_4_3.TemporalData.simple", weights_only=False).to(device=device)
++    graph_4_4 = torch.load(graphs_dir + "/graph_4_4.TemporalData.simple", weights_only=False).to(device=device)
+     return [graph_4_2, graph_4_3, graph_4_4]
+ 
+ def init_models(node_feat_size):

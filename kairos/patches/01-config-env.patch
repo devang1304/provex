@@ -1,0 +1,86 @@
+PROVEX patch 01-config-env
+Read the DB connection (PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE), KAIROS_ARTIFACT_DIR, KAIROS_RAW_DIR and KAIROS_GRAPHS_DIR from the environment; the upstream values are the defaults.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/config.py b/config.py
+index 7d53cf1..a3e3d25 100644
+--- a/config.py
++++ b/config.py
+@@ -1,17 +1,33 @@
++import os
++
++
++def _env(name, default):
++    """Value of environment variable `name`, or `default` when unset/empty."""
++    value = os.environ.get(name)
++    if value is None or value == "":
++        return default
++    return value
++
++
++def _env_dir(name, default):
++    """Like _env, but always ends with "/" (paths are built by concatenation)."""
++    return os.path.join(_env(name, default), "")
++
++
+ ########################################################
+ #
+ #                   Artifacts path
+ #
+ ########################################################
+ 
+-# The directory of the raw logs
+-raw_dir = "/the/absolute/path/of/cadets_e3/"
++# The directory of the raw logs (env: KAIROS_RAW_DIR)
++raw_dir = _env_dir("KAIROS_RAW_DIR", "/the/absolute/path/of/cadets_e3/")
+ 
+-# The directory to save all artifacts
+-artifact_dir = "./artifact/"
++# The directory to save all artifacts (env: KAIROS_ARTIFACT_DIR)
++artifact_dir = _env_dir("KAIROS_ARTIFACT_DIR", "./artifact/")
+ 
+-# The directory to save the vectorized graphs
+-graphs_dir = artifact_dir + "graphs/"
++# The directory to save the vectorized graphs (env: KAIROS_GRAPHS_DIR)
++graphs_dir = _env_dir("KAIROS_GRAPHS_DIR", artifact_dir + "graphs/")
+ 
+ # The directory to save the models
+ models_dir = artifact_dir + "models/"
+@@ -30,23 +46,27 @@ vis_re = artifact_dir + "vis_re/"
+ #
+ ########################################################
+ 
+-# Database name
+-database = 'tc_cadet_dataset_db'
++# All database settings can be overridden with the standard libpq
++# environment variables; the defaults are the upstream values.
++
++# Database name (env: PGDATABASE)
++database = _env("PGDATABASE", 'tc_cadet_dataset_db')
+ 
+ # Only config this setting when you have the problem mentioned
+ # in the Troubleshooting section in settings/environment-settings.md.
+ # Otherwise, set it as None
+-host = '/var/run/postgresql/'
++# (env: PGHOST, either a socket directory or a TCP host name such as localhost)
++host = _env("PGHOST", '/var/run/postgresql/')
+ # host = None
+ 
+-# Database user
+-user = 'postgres'
++# Database user (env: PGUSER)
++user = _env("PGUSER", 'postgres')
+ 
+-# The password to the database user
+-password = 'postgres'
++# The password to the database user (env: PGPASSWORD)
++password = _env("PGPASSWORD", 'postgres')
+ 
+-# The port number for Postgres
+-port = '5432'
++# The port number for Postgres (env: PGPORT)
++port = _env("PGPORT", '5432')
+ 
+ 
+ ########################################################

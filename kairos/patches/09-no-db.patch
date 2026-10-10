@@ -1,0 +1,109 @@
+PROVEX patch 09-no-db
+No-DB path: the psycopg2 import is optional, and test.py takes nodeid2msg from KAIROS_NODE_MAP_JSON ({index_id: '<type>: <msg>'}) when it is set, or from the database otherwise (upstream behaviour).
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/config.py b/config.py
+index fa2aad1..333f79c 100644
+--- a/config.py
++++ b/config.py
+@@ -73,6 +73,13 @@ password = _env("PGPASSWORD", 'postgres')
+ # The port number for Postgres (env: PGPORT)
+ port = _env("PGPORT", '5432')
+ 
++# No-DB path (env: KAIROS_NODE_MAP_JSON): JSON export of node2id
++# {"<index_id>": "<node_type>: <msg>"}, e.g. PROVEX's
++# artifact/explanations/node_mapping.json. When set, test.py reads the node
++# labels from this file instead of the database. Together with pre-built day
++# graphs (KAIROS_GRAPHS_DIR), train/test/queues/evaluation need no database.
++node_map_json = _env("KAIROS_NODE_MAP_JSON", None)
++
+ 
+ ########################################################
+ #
+diff --git a/kairos_utils.py b/kairos_utils.py
+index 6bb20ea..429237e 100644
+--- a/kairos_utils.py
++++ b/kairos_utils.py
+@@ -2,8 +2,14 @@ import pytz
+ from time import mktime
+ from datetime import datetime
+ import time
+-import psycopg2
+-from psycopg2 import extras as ex
++try:
++    import psycopg2
++    from psycopg2 import extras as ex
++except ImportError:
++    # Only needed for database access; the no-DB path (pre-built graphs +
++    # KAIROS_NODE_MAP_JSON) runs without psycopg2.
++    psycopg2 = None
++    ex = None
+ import os.path as osp
+ import os
+ import copy
+@@ -27,6 +33,7 @@ import xxhash
+ import gc
+ import argparse
+ import random
++import json
+ 
+ from config import *
+ 
+@@ -111,6 +118,9 @@ def datetime_to_timestamp_US(date):
+     return int(timeStamp)
+ 
+ def init_database_connection():
++    if psycopg2 is None:
++        raise ImportError("psycopg2 is required for database access "
++                          "(set KAIROS_NODE_MAP_JSON to run test.py without a database)")
+     if host is not None:
+         connect = psycopg2.connect(database = database,
+                                    host = host,
+@@ -138,6 +148,31 @@ def gen_nodeid2msg(cur):
+ 
+     return nodeid2msg
+ 
++def load_nodeid2msg_json(path):
++    """index_id -> {node_type: msg} from a JSON export of node2id.
++
++    The file maps "<index_id>" to "<node_type>: <msg>" (e.g. PROVEX's
++    artifact/explanations/node_mapping.json). This is the index_id part of
++    gen_nodeid2msg(); its hash_id -> index_id entries are not available
++    (test.py only looks up index_ids).
++    """
++    with open(path, "r", encoding="utf-8") as f:
++        mapping = json.load(f)
++    nodeid2msg = {}
++    for index_id, label in mapping.items():
++        node_type, sep, msg = label.partition(": ")
++        if not sep:
++            raise ValueError(f"{path}: unexpected node label {label!r} for index_id {index_id}")
++        nodeid2msg[int(index_id)] = {node_type: msg}
++    return nodeid2msg
++
++def get_nodeid2msg():
++    """nodeid2msg from KAIROS_NODE_MAP_JSON when set, else from the database (upstream)."""
++    if node_map_json is not None:
++        return load_nodeid2msg_json(node_map_json)
++    cur, _ = init_database_connection()
++    return gen_nodeid2msg(cur=cur)
++
+ def tensor_find(t,x):
+     t_np=t.cpu().numpy()
+     idx=np.argwhere(t_np==x)
+diff --git a/test.py b/test.py
+index 3132596..599afe2 100644
+--- a/test.py
++++ b/test.py
+@@ -172,8 +172,8 @@ if __name__ == "__main__":
+     logger.info("Start logging.")
+ 
+     # load the map between nodeID and node labels
+-    cur, _ = init_database_connection()
+-    nodeid2msg = gen_nodeid2msg(cur=cur)
++    # (from KAIROS_NODE_MAP_JSON if set, otherwise from the database as upstream)
++    nodeid2msg = get_nodeid2msg()
+ 
+     # load trained model
+     memory, gnn, link_pred, neighbor_loader = torch.load(f"{models_dir}/models.pt",map_location=device, weights_only=False)

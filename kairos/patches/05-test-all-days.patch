@@ -1,0 +1,135 @@
+PROVEX patch 05-test-all-days
+test.py reconstructs every existing day graph in config.test_graphs (graph_4_3..graph_4_13, or --graphs), loading one day at a time; window files and scoring unchanged.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/config.py b/config.py
+index aeb28a1..20b4c3d 100644
+--- a/config.py
++++ b/config.py
+@@ -159,6 +159,11 @@ epoch_num=50
+ # The default setting is 15 minutes.
+ time_window_size = 60000000000 * 15
+ 
++# Day graphs reconstructed by test.py (missing graph files are skipped).
++# Upstream only tests graph_4_3 .. graph_4_7; graph_4_3 .. graph_4_5 are also
++# needed for the node IDF of the anomalous queue construction.
++test_graphs = ["graph_4_" + str(day) for day in range(3, 14)]
++
+ 
+ ########################################################
+ #
+diff --git a/test.py b/test.py
+index 380dc00..3132596 100644
+--- a/test.py
++++ b/test.py
+@@ -11,6 +11,9 @@ from model import *
+ 
+ # --seed <n>: seed every RNG and use the run in <artifact_dir>seed_<n>/
+ parser = seed_arg_parser("Reconstruct the CADETS E3 day graphs with a trained KAIROS model.")
++parser.add_argument("--graphs", nargs="+", default=None,
++                    help="day graphs to reconstruct, e.g. graph_4_6 graph_4_11 "
++                         "(default: config.test_graphs = graph_4_3 .. graph_4_13)")
+ args = parser.parse_args()
+ if args.seed is not None:
+     set_seed(args.seed)
+@@ -152,17 +155,17 @@ def test(inference_data,
+ 
+     return time_with_loss
+ 
+-def load_data():
+-    # graph_4_3 - graph_4_5 will be used to initialize node IDF scores.
+-    graph_4_3 = torch.load(graphs_dir + "/graph_4_3.TemporalData.simple", weights_only=False).to(device=device)
+-    graph_4_4 = torch.load(graphs_dir + "/graph_4_4.TemporalData.simple", weights_only=False).to(device=device)
+-    graph_4_5 = torch.load(graphs_dir + "/graph_4_5.TemporalData.simple", weights_only=False).to(device=device)
++def load_data(graph_name):
++    """Load one vectorized day graph, or return None if it does not exist.
+ 
+-    # Testing set
+-    graph_4_6 = torch.load(graphs_dir + "/graph_4_6.TemporalData.simple", weights_only=False).to(device=device)
+-    graph_4_7 = torch.load(graphs_dir + "/graph_4_7.TemporalData.simple", weights_only=False).to(device=device)
+-
+-    return [graph_4_3, graph_4_4, graph_4_5, graph_4_6, graph_4_7]
++    graph_4_3 - graph_4_5 will be used to initialize node IDF scores; the
++    other days are the testing set. Graphs are loaded one at a time (instead
++    of all upfront) so that every day 4_3..4_13 fits in GPU memory.
++    """
++    graph_path = graphs_dir + "/" + graph_name + ".TemporalData.simple"
++    if not os.path.exists(graph_path):
++        return None
++    return torch.load(graph_path, weights_only=False).to(device=device)
+ 
+ 
+ if __name__ == "__main__":
+@@ -172,49 +175,28 @@ if __name__ == "__main__":
+     cur, _ = init_database_connection()
+     nodeid2msg = gen_nodeid2msg(cur=cur)
+ 
+-    # Load data
+-    graph_4_3, graph_4_4, graph_4_5, graph_4_6, graph_4_7 = load_data()
+-
+     # load trained model
+     memory, gnn, link_pred, neighbor_loader = torch.load(f"{models_dir}/models.pt",map_location=device, weights_only=False)
+ 
+-    # Reconstruct the edges in each day
+-    test(inference_data=graph_4_3,
+-         memory=memory,
+-         gnn=gnn,
+-         link_pred=link_pred,
+-         neighbor_loader=neighbor_loader,
+-         nodeid2msg=nodeid2msg,
+-         path=artifact_dir + "graph_4_3")
+-
+-    test(inference_data=graph_4_4,
+-         memory=memory,
+-         gnn=gnn,
+-         link_pred=link_pred,
+-         neighbor_loader=neighbor_loader,
+-         nodeid2msg=nodeid2msg,
+-         path=artifact_dir + "graph_4_4")
+-
+-    test(inference_data=graph_4_5,
+-         memory=memory,
+-         gnn=gnn,
+-         link_pred=link_pred,
+-         neighbor_loader=neighbor_loader,
+-         nodeid2msg=nodeid2msg,
+-         path=artifact_dir + "graph_4_5")
+-
+-    test(inference_data=graph_4_6,
+-         memory=memory,
+-         gnn=gnn,
+-         link_pred=link_pred,
+-         neighbor_loader=neighbor_loader,
+-         nodeid2msg=nodeid2msg,
+-         path=artifact_dir + "graph_4_6")
+-
+-    test(inference_data=graph_4_7,
+-         memory=memory,
+-         gnn=gnn,
+-         link_pred=link_pred,
+-         neighbor_loader=neighbor_loader,
+-         nodeid2msg=nodeid2msg,
+-         path=artifact_dir + "graph_4_7")
++    # Reconstruct the edges in each day. test() resets the memory and the
++    # neighbor loader at the start of every day, exactly as upstream, so the
++    # result of a day does not depend on which other days are scored.
++    for graph_name in (args.graphs if args.graphs else test_graphs):
++        inference_data = load_data(graph_name)
++        if inference_data is None:
++            logger.info(f"{graph_name}: no graph file in {graphs_dir}, skipped")
++            continue
++        if inference_data.num_events == 0:
++            logger.info(f"{graph_name}: empty graph, skipped")
++            continue
++        logger.info(f"Reconstructing {graph_name} ({inference_data.num_events} events)")
++        test(inference_data=inference_data,
++             memory=memory,
++             gnn=gnn,
++             link_pred=link_pred,
++             neighbor_loader=neighbor_loader,
++             nodeid2msg=nodeid2msg,
++             path=artifact_dir + graph_name)
++        del inference_data
++        if torch.cuda.is_available():
++            torch.cuda.empty_cache()
