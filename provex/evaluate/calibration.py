@@ -23,7 +23,8 @@ from ..explain.joint_mask import Explanation
 
 
 def _phi(x: np.ndarray) -> np.ndarray:
-    return 0.5 * (1 + np.vectorize(math.erf)(x / math.sqrt(2.0)))
+    from scipy.special import ndtr
+    return ndtr(np.asarray(x, dtype=float))
 
 
 @torch.no_grad()
@@ -31,6 +32,8 @@ def posterior_calibration(em: EventModel, ex: Explanation, tau: float, T: float 
     pi = np.asarray(ex.scores, dtype=float)
     mu0 = np.asarray(ex.extra["prior_mu"], dtype=float)
     n = min(n, len(pi))
+    if n == 0:
+        return {"items": [], "pi_var": [], "pi_exact": [], "abs_err": [], "n": 0}
     S = np.argsort(-(pi * (1 - pi)), kind="stable")[:n]          # most uncertain items
     base = torch.tensor(pi > 0.5, dtype=em.dtype, device=em.device)
     prior_keep = np.clip(_phi(mu0[S]), 1e-9, 1 - 1e-9)

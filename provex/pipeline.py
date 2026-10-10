@@ -58,7 +58,7 @@ def cmd_pass1(a):
     memory, gnn, lp, hp = load_checkpoint(a.ckpt, "cpu")
     data = load_day(a.day_file)
     t0 = time.perf_counter()
-    losses, windows = KairosReplayer(memory, gnn, lp, hp, batch_size=a.batch_size).pass1(data)
+    losses, windows = KairosReplayer(memory, gnn, lp, hp, batch_size=a.batch_size, window_ns=a.window_ns).pass1(data)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     torch.save({"losses": losses, "windows": [w.__dict__ for w in windows], "day": a.day,
                 "ckpt": str(a.ckpt), "runtime_s": time.perf_counter() - t0}, out / f"pass1_{a.day}.pt")
@@ -294,7 +294,8 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("pass1"); s.add_argument("--ckpt", required=True); s.add_argument("--day-file", required=True)
     s.add_argument("--day", required=True); s.add_argument("--out", required=True)
-    s.add_argument("--batch-size", type=int, default=1024); s.set_defaults(fn=cmd_pass1)
+    s.add_argument("--batch-size", type=int, default=1024); s.add_argument("--window-ns", type=int, default=15 * 60 * 10**9)
+    s.set_defaults(fn=cmd_pass1)
     s = sub.add_parser("parity"); s.add_argument("--pass1", required=True); s.add_argument("--kairos-windows", required=True)
     s.add_argument("--day", required=True); s.add_argument("--out", required=True); s.set_defaults(fn=cmd_parity)
     s = sub.add_parser("explain")
