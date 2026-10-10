@@ -48,8 +48,10 @@ class EventModel(nn.Module):
         self.ei = cap.edge_index.to(dev)
         self.y = torch.tensor([cap.y], device=dev)
         self.ftgn = FunctionalTGN(memory, cap.hist, pos, dtype, dev) if hist_items else None
-        gid = cap.node_gid.tolist()
-        self.r_local = [gid.index(n) for n in (cap.hist.R if self.ftgn is not None else [])]
+        pos_g = {n: i for i, n in enumerate(cap.node_gid.tolist())}
+        pairs = [(k, pos_g[n]) for k, n in enumerate(cap.hist.R) if n in pos_g] if self.ftgn is not None else []
+        self.r_hist = [k for k, _ in pairs]      # rows of the functional replay ...
+        self.r_local = [i for _, i in pairs]     # ... written into these subgraph nodes
     @property
     def num_items(self) -> int:
         return int(self.items.numel())
@@ -73,8 +75,8 @@ class EventModel(nn.Module):
         if self.ftgn is not None and history and g is not None:
             mem_r, lu_r = self.ftgn(g)
             x = x.clone(); lu = lu.clone()
-            x[self.r_local] = mem_r
-            lu[self.r_local] = lu_r
+            x[self.r_local] = mem_r[self.r_hist]
+            lu[self.r_local] = lu_r[self.r_hist]
         ei, t_off, msg = self.ei, self.edge_t_off, self.edge_msg
         eg = edge_g if edge_g is not None else g
         m = None if eg is None else eg[self.edge_item]

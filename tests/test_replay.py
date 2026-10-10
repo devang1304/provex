@@ -104,42 +104,37 @@ def test_functional_tgn_identity(tiny):
         if em.ftgn is None:
             continue
         mem_r, lu_r = em.ftgn(None, check=True, atol=1e-10)
-        assert torch.allclose(mem_r, cap.x[em.r_local].double(), atol=1e-10, rtol=0), ev
-        assert torch.allclose(lu_r, em.lu_off[em.r_local], atol=0.5, rtol=0), ev
+        assert torch.allclose(mem_r[em.r_hist], cap.x[em.r_local].double(), atol=1e-10, rtol=0), ev
+        assert torch.allclose(lu_r[em.r_hist], em.lu_off[em.r_local], atol=0.5, rtol=0), ev
         ones = torch.ones(em.num_items, dtype=torch.float64)
         assert torch.allclose(em(ones), em(None), atol=1e-10, rtol=0), ev
 
 
 def test_functional_tgn_deletion_matches_full_replay(tiny):
-    """Deleting a history event whose counterpart never meets u/v again is exact."""
+    """With a complete influence closure, deleting any history event reproduces a full PyG
+    replay (with that event removed) exactly, for both endpoints of the explained event."""
     from provex.evaluate.local_vs_full import full_replay
     hp, memory, gnn, lp, data = tiny
     checked = 0
     for ev, cap in _caps(tiny).items():
         em = EventModel(memory, gnn, lp, cap, dtype=torch.float64)
-        if em.ftgn is None:
+        if em.ftgn is None or not cap.hist.exact_scope:
             continue
-        R = set(cap.hist.R)
-        later = {}
-        for k in cap.hist.items():
-            later[k] = set()
-        hist_items = cap.hist.items()
-        for k in hist_items:
-            a, b = int(data.src[k]), int(data.dst[k])
-            c = b if a in R else a
-            meets_again = any(((int(data.src[j]) in R and int(data.dst[j]) == c) or
-                               (int(data.dst[j]) in R and int(data.src[j]) == c))
-                              for j in range(k + 1, cap.batch * BATCH))
-            if meets_again or c in R:
-                continue
+        n_uv = 1 if int(data.src[ev]) == int(data.dst[ev]) else 2    # R starts with [src, dst]
+        for k in cap.hist.items()[:20]:
             g = torch.ones(em.num_items, dtype=torch.float64)
             g[em.item_pos[k]] = 0
-            mem_f, lu_f = em.ftgn(g)
-            _, mem_full, lu_full = full_replay(memory, gnn, lp, hp, data, [k], ev, batch_size=BATCH)
-            r = torch.tensor(cap.hist.R)
-            order = [sorted([int(data.src[ev]), int(data.dst[ev])]).index(n) for n in cap.hist.R]
-            assert torch.allclose(mem_f, mem_full[order].double(), atol=1e-10, rtol=0), (ev, k)
+            mem_f, _ = em.ftgn(g)
+            _, mem_full, _ = full_replay(memory, gnn, lp, hp, data, [k], ev, batch_size=BATCH)
+            assert torch.allclose(mem_f[:n_uv], mem_full[:n_uv].double(), atol=1e-10, rtol=0), (ev, k)
             checked += 1
-            if checked >= 12:
-                return
-    assert checked > 0
+    assert checked >= 20
+    print(f"closure deletions checked exactly: {checked}")
+
+
+def test_first_order_scope_flags_inexact(tiny):
+    hp, memory, gnn, lp, data = tiny
+    rep = KairosReplayer(memory, gnn, lp, hp, batch_size=BATCH, window_ns=WINDOW_NS)
+    caps = rep.pass2(data, TARGETS, history_batches=8, scope="first_order")
+    assert all(c.hist.R[:2] == [int(data.src[e]), int(data.dst[e])][:len(c.hist.R[:2])] for e, c in caps.items())
+    assert any(not c.hist.exact_scope for c in caps.values())

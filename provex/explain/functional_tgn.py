@@ -61,7 +61,7 @@ class FunctionalTGN:
                     "raw": torch.stack([c.raw for c in cands]).to(dev, dtype),
                     "cp_frozen": torch.stack([c.counterpart_mem for c in cands]).to(dev, dtype),
                     "cp_in_r": [self.r_pos.get(c.counterpart, -1) for c in cands],
-                    "item": torch.tensor([item_pos.get(c.ev, -1) if c.ev >= 0 else -1 for c in cands],
+                    "item": torch.tensor([item_pos.get(c.ev, -1) if hist.ev_lo <= c.ev < hist.ev_hi else -1 for c in cands],
                                          device=dev),
                     "current": torch.tensor([c.current for c in cands], device=dev),
                     "step": st,

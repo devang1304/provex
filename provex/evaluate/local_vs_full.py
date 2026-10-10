@@ -47,3 +47,32 @@ def full_replay(memory, gnn, link_pred, hp, data, deleted: Iterable[int], event:
             loader.insert(src, dst)
             counter_to_ev.extend(keep.tolist())
     raise RuntimeError("event batch not reached")
+
+def first_order_exact(data, R, deleted, event: int, batch_size: int = 1024) -> bool:
+    """True if FunctionalTGN's first-order scope is exact for deleting ``deleted``.
+
+    A deleted event perturbs the memory of its endpoints. The perturbation spreads at batch
+    granularity: after a batch, both endpoints of any event that touched a perturbed node are
+    perturbed too. First-order replay freezes counterparts outside R at their true memories,
+    so it is exact iff no R node ever receives a message from a perturbed node outside R
+    before the explained event's batch. Stale message-store entries are not modelled.
+    """
+    R, deleted = set(int(r) for r in R), set(int(d) for d in deleted)
+    if not deleted:
+        return True
+    perturbed = set()
+    for b in range(min(deleted) // batch_size, event // batch_size):
+        lo, hi = b * batch_size, min((b + 1) * batch_size, data.num_events)
+        new = set()
+        for j in range(lo, hi):
+            a, c = int(data.src[j]), int(data.dst[j])
+            if j in deleted:
+                new |= {a, c}
+                continue
+            for i, other in ((a, c), (c, a)):
+                if i in R and other in perturbed and other not in R:
+                    return False
+            if a in perturbed or c in perturbed:
+                new |= {a, c}
+        perturbed |= new
+    return True

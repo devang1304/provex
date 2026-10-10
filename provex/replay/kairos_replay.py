@@ -114,7 +114,8 @@ class KairosReplayer:
         return losses, windows
 
     # ------------------------------------------------------------------ pass 2
-    def pass2(self, data, targets: Iterable[int], *, history_batches: int = 64) -> Dict[int, EventCapture]:
+    def pass2(self, data, targets: Iterable[int], *, history_batches: int = 64, scope: str = "closure",
+              closure_cap: int = 64) -> Dict[int, EventCapture]:
         """Capture the computation subgraph and memory history of each target event.
 
         ``targets`` are absolute event indices in ``data``. For each target e = (u, v) in batch B,
@@ -131,8 +132,10 @@ class KairosReplayer:
         by_batch: Dict[int, List[int]] = {}
         for ev in targets:
             by_batch.setdefault(ev // bs, []).append(ev)
-        r_of = {ev: sorted({int(data.src[ev]), int(data.dst[ev])}) for ev in targets}
         b0_of = {ev: max(0, ev // bs - history_batches) for ev in targets}
+        r_of, exact_of = {}, {}
+        for ev in targets:
+            r_of[ev], exact_of[ev] = influence_set(data, ev, b0_of[ev], bs, scope, closure_cap)
         watch: Set[int] = set().union(*r_of.values())
         first_b = min(b0_of.values())
         snap_at: Dict[int, List[int]] = {}
@@ -229,5 +232,36 @@ class KairosReplayer:
         for ev, cap in caps.items():
             mem0, lu0 = snapshots[ev]
             cap.hist = HistoryContext(R=r_of[ev], b0=b0_of[ev], mem0=mem0, lu0=lu0,
-                                      steps=hist_steps[ev], t_ref=t_ref)
+                                      steps=hist_steps[ev], t_ref=t_ref, scope=scope, exact_scope=exact_of[ev],
+                                      ev_lo=b0_of[ev] * bs, ev_hi=(ev // bs) * bs)
         return caps
+
+
+def influence_set(data, event: int, b0: int, batch_size: int, scope: str = "closure", cap: int = 64):
+    """Nodes whose memory can influence u/v's memory at the event's batch, within [b0, B_e).
+
+    first_order: {u, v}. closure: walk batches backwards. If node i is in S and has an event
+    (i, c) in batch b, then c's pre-batch memory fed i's update, so c joins S for earlier
+    batches. Returns (sorted node list with u, v first, exact). exact is False when the cap
+    truncated the closure, or when the scope is first_order and some counterpart would have
+    joined.
+    """
+    u, v = int(data.src[event]), int(data.dst[event])
+    S = [u] if u == v else [u, v]
+    inS = set(S)
+    truncated = False
+    for b in range(event // batch_size - 1, b0 - 1, -1):
+        lo, hi = b * batch_size, min((b + 1) * batch_size, data.num_events)
+        src, dst = data.src[lo:hi].tolist(), data.dst[lo:hi].tolist()
+        new = []
+        for a, c in zip(src, dst):
+            if a in inS and c not in inS:
+                new.append(c)
+            if c in inS and a not in inS:
+                new.append(a)
+        for n in dict.fromkeys(new):
+            if scope == "first_order" or len(S) >= cap:
+                truncated = True
+                continue
+            S.append(n); inS.add(n)
+    return S, not truncated

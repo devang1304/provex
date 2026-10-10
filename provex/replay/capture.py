@@ -43,13 +43,17 @@ class HistoryContext:
     lu0: Tensor                     # [|R|] last_update (int64 ns)
     steps: List[List[Step]]         # per touched batch, the steps for R nodes in that batch
     t_ref: int                      # time origin for float64 offsets
+    scope: str = "closure"          # 'closure' or 'first_order'
+    exact_scope: bool = True        # False if the influence closure was truncated
+    ev_lo: int = 0                  # history items are events in [ev_lo, ev_hi): the window
+    ev_hi: int = 1 << 62
 
     def items(self) -> List[int]:
         out = set()
         for batch_steps in self.steps:
             for st in batch_steps:
                 for c in st.cands:
-                    if c.ev >= 0:
+                    if self.ev_lo <= c.ev < self.ev_hi:
                         out.add(c.ev)
         return sorted(out)
 

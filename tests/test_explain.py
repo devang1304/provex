@@ -68,3 +68,26 @@ def test_stability_and_agreement_bounds():
     assert 0 <= st["topk_jaccard"] <= 1
     ag = metrics.agreement(a, b, k=2)
     assert ag["topk_jaccard"] == 1.0
+
+def test_graphmask_fit_and_explain(tiny):
+    from provex.explain.graphmask_tc import GraphMaskTC
+    hp, memory, gnn, lp, data = tiny
+    rep = KairosReplayer(memory, gnn, lp, hp, batch_size=BATCH, window_ns=WINDOW_NS)
+    losses, _ = rep.pass1(data)
+    evs = torch.argsort(losses[300:], descending=True)[:6].add(300).tolist()
+    caps = rep.pass2(data, evs, history_batches=0)
+    models = [EventModel(memory, gnn, lp, caps[e], use_history=False, dtype=torch.float64) for e in evs]
+    gm = GraphMaskTC(gnn).double()
+    hist = gm.fit(models, epochs=3, log=lambda r: None)
+    assert len(hist) == 3
+    ex = gm.explain(models[0], tau=0.0)
+    assert len(ex.scores) == models[0].num_items
+
+
+def test_calibration_enumeration_runs(tiny):
+    from provex.evaluate.calibration import ece, posterior_calibration
+    em, tau, data = _top_event(tiny)
+    ex = VariationalTemporalExplainer(epochs=40, samples=4, mc_export=32).explain(em, tau, data.t)
+    cal = posterior_calibration(em, ex, tau, n=6)
+    assert cal["n"] == 6 and all(0 <= p <= 1 for p in cal["pi_exact"])
+    assert 0 <= ece(list(zip(cal["pi_var"], cal["pi_exact"]))) <= 1

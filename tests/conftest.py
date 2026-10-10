@@ -13,8 +13,9 @@ def tiny():
     hp = KairosHParams(num_nodes=30, raw_msg_dim=15, memory_dim=8, time_dim=8, embedding_dim=8,
                        neighbor_size=5, num_edge_types=7, node_embedding_dim=4)
     memory, gnn, lp = build(hp)
+    memory.eval(); gnn.eval(); lp.eval()          # eval first: TGNMemory.train(False) flushes its store
     memory, gnn, lp = memory.double(), gnn.double(), lp.double()
-    memory.eval(); gnn.eval(); lp.eval()
+    memory.reset_state()                          # re-create the message store in float64
     for m in (memory, gnn, lp):
         for p in m.parameters():
             p.requires_grad_(False)
