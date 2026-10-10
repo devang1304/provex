@@ -109,7 +109,7 @@ def make_client():
 def list_active_instances(client, project: str) -> list[tuple[str, str, str]]:
     """(zone, name, status) of every instance in ACTIVE_STATES, all zones (aggregated list)."""
     found = []
-    request = {"project": project, "return_partial_success": True}
+    request = {"project": project}  # no return_partial_success: not a field in every compute_v1 release
     for scope, scoped_list in client.aggregated_list(request=request):
         for inst in getattr(scoped_list, "instances", None) or []:
             if inst.status in ACTIVE_STATES:
