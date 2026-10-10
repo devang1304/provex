@@ -77,8 +77,16 @@ LAUNCHED=0
 on_exit() {
   local rc=$?
   if (( STARTED_BY_US == 1 && LAUNCHED == 0 )); then
-    warn "the launch did not complete - stopping ${VM} so it does not sit idle"
-    stop_vm "$VM" "$I_ZONE" async >/dev/null 2>&1 || warn "could not stop ${VM} - run ./down.sh"
+    # Stop only when we can positively see that NO job runs there. A launcher killed or timed out
+    # long after it started the VM must not stop a job launched since by another invocation
+    # (this happened once). When unsure, leave it: the idle watchdog stops an idle VM in ~15 min.
+    if vm_ssh "$VM" "$I_ZONE" "tmux has-session -t =provex-job 2>/dev/null && echo BUSY || echo IDLE" \
+         < /dev/null 2>/dev/null | tr -d '\r' | grep -qx IDLE; then
+      warn "the launch did not complete - stopping ${VM} (verified idle) so it does not sit idle"
+      stop_vm "$VM" "$I_ZONE" async >/dev/null 2>&1 || warn "could not stop ${VM} - run ./down.sh"
+    else
+      warn "the launch did not complete; ${VM} is busy or unreachable - NOT stopping it (idle watchdog applies)"
+    fi
   fi
   exit "$rc"
 }
