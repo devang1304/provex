@@ -1,279 +1,79 @@
 # PROVEX
 
-**Prov**enance Graph **Ex**plainability Framework — an XAI pipeline for Temporal Graph Network (TGN) intrusion detection on the DARPA CADETS provenance graph dataset. PROVEX generates graph-based explanations using multiple methods (GraphMask, VA-TG, GNNExplainer) and produces analyst-friendly reports with optional GPT narratives.
+PROVEX explains the alerts of [KAIROS](https://github.com/ProvenanceAnalytics/kairos), a temporal graph network (TGN) intrusion detector for system provenance graphs, on DARPA TC CADETS E3. For an alert event it asks two questions. Which past events make KAIROS call this event anomalous? And would removing them clear the alert?
 
-📄 **Research Paper**: [report.pdf](report.pdf)
-
----
-
-## Architecture Overview
-
-### Target Model (`model.py`)
-
-PROVEX explains predictions from a **Temporal Graph Network (TGN)** with the following architecture:
-
-- **Graph Encoder**: 2-layer Graph Transformer (`TransformerConv`)
-  - Layer 1: 8 attention heads
-  - Layer 2: 1 attention head
-  - Edge Features: Concatenation of relative time encoding (`rel_t_enc`) and raw message features (`msg`)
-- **Link Predictor**: 4-layer MLP (`Linear` → `Tanh` → `Dropout`) predicting edge labels from source/destination embeddings
-- **Memory**: TGN memory module with `LastAggregator` for incoming messages
-- **Dataset**: Optimized for DARPA CADETS provenance graphs
-
-### Explainers
-
-| Explainer        | Goal                                                     | Key Parameters                                    |
-| ---------------- | -------------------------------------------------------- | ------------------------------------------------- |
-| **GraphMask**    | Learn sparse binary edge mask preserving predictions     | 200 epochs, lr=0.01, sparsity/entropy weight=1e-3 |
-| **VA-TG**        | Variational mask distribution capturing uncertainty      | 200 epochs, 10 samples/step, KL weight=1e-3       |
-| **GNNExplainer** | Compact subgraph + feature subset via Mutual Information | 200 epochs, lr=0.01                               |
-
----
-
-## 1) Prerequisites
-
-> **PROVEX is a post-training explainability framework.** You must have already trained a TGN model using the Kairos pipeline.
-
-### Required Artifacts from Kairos
-
-Before running PROVEX, ensure you have the following artifacts from the Kairos training pipeline:
-
-| Artifact             | Path (default)                            | Description                                                     |
-| -------------------- | ----------------------------------------- | --------------------------------------------------------------- |
-| **Trained Model**    | `artifact/models/`                        | TGN checkpoint (`.pt` file)                                     |
-| **Graph Embeddings** | `artifact/graph_embeddings/`              | `*.TemporalData.simple` files with pre-computed node embeddings |
-| **Node Mapping**     | `artifact/explanations/node_mapping.json` | _(Optional)_ Node ID → human-readable labels                    |
-
-### Directory Structure
-
-```
-artifact/
-├── models/
-│   └── tgn_checkpoint.pt          # Trained TGN model
-├── graph_embeddings/
-│   └── *.TemporalData.simple      # Graph windows with embeddings
-└── explanations/
-    └── node_mapping.json          # Optional: exported from DB
-```
-
-> ### **First-Time Clone (Git LFS)**
+> **v1 errata.** The first version (arXiv:2512.18199v1; tag `v1.0-arxiv-v1`) had defects that invalidate its results:
+> - explained edges carried local indices instead of node IDs;
+> - every explainer explained why an event looks *normal*;
+> - Tables II–IV and the case study cite edges that do not exist in CADETS E3.
 >
-> The `artifact.tar.gz` file is stored using [Git LFS](https://git-lfs.com/). After cloning, pull the LFS files:
->
-> ```bash
-> # Install Git LFS (if not already installed)
-> brew install git-lfs   # macOS
-> # apt install git-lfs  # Ubuntu/Debian
->
-> # Initialize LFS and pull large files
-> git lfs install
-> git lfs pull
-> ```
+> Those results are withdrawn. [ERRATA.md](ERRATA.md) lists every problem and what v2 changes. v2 re-measures everything, and every number in the v2 paper is generated from `results/` by `scripts/make_tables.py` and `scripts/make_case_studies.py`.
 
-> ### **Quick Start**:
->
-> Pre-computed artifacts are included. Simply extract:
->
-> ```bash
-> tar -xzf artifact.tar.gz
-> ```
+## What v2 does
 
----
+- **Explains the scores KAIROS alerts on.** `provex.replay` replays KAIROS exactly (batch size 1024, memory reset per day, 15-minute windows) and reads its alert queues. It explains the alert events themselves; it does not re-score them.
+- **Explains the anomaly, not normality.** The objectives are in loss space.
+  - A *preserve* explanation is a minimal set of past events that keeps the score above the window threshold τ.
+  - A *counterfactual* explanation is a minimal set whose removal drops the score below τ.
+  - Every explanation is checked by exact deletion and repaired if needed.
+- **Covers memory as well as edges.** A differentiable replay of TGN memory updates gates individual past events (*history*), not only the neighbour edges of the current batch. Its deletions are tested against full re-execution of the detector.
+- **Reports uncertainty.** A variational explainer with a temporal prior exports inclusion probabilities. They are checked against exact posterior enumeration.
+- **Sorts alerts by cause.** Some alerts stay anomalous with the whole window removed. PROVEX labels those as prior-driven or long-memory-driven instead of returning a misleading mask.
+- **Compares against baselines on the same items:**
+  - GraphMask for TransformerConv;
+  - GNNExplainer, with our objective and with the v1 objective;
+  - occlusion, integrated gradients, gradient, attention, recency and random.
 
-## 2) Setup
+## Repository layout
 
-### Environment
+| Path | Contents |
+|---|---|
+| `provex/` | The v2 package:<br>`replay/` (exact KAIROS replay, alerts, event captures)<br>`explain/` (explainers)<br>`evaluate/` (metrics, calibration, local-vs-full replay)<br>`pipeline.py` (CLI) |
+| `kairos/` | A patch series over upstream KAIROS at a pinned commit, plus `setup_upstream.sh`, which fetches upstream, verifies it and applies the patches. Upstream ships without a license, so this repository contains only the patches. |
+| `ground_truth/cadets_e3/orthrus/` | Node-level ground truth from PIDSMaker/ORTHRUS (Apache-2.0). |
+| `scripts/` | `run_experiments.sh` (every experiment stage), `make_tables.py` and `make_case_studies.py` (paper numbers), and diagnostics. |
+| `tests/` | A pytest suite on a synthetic float64 model. It covers replay exactness, deletion exactness against full re-execution, explainer validity and the end-to-end CLI. |
+| `infra/gcp/` | How the experiments were run on Google Cloud, with cost guardrails: a job runner that stops the VM, an idle watchdog and a budget kill switch. |
+| `paper/` | LaTeX for v2 (`provex_v2.tex`) and v1 (`report.tex`). Generated tables go in `paper/generated/`. |
 
-```bash
-# Option A: Conda (recommended)
-conda env create -f environment.yml
-conda activate provex
+## Quick start
 
-# Option B: pip
-pip install -r requirements.txt
-# + install PyTorch/PyG for your platform (see requirements.txt comments)
-```
-
-### Configuration
-
-Edit `config.py`:
-
-```python
-ARTIFACT_DIR = "./artifact/"                          # Root artifact path
-GRAPHS_DIR   = ARTIFACT_DIR + "graph_embeddings/"     # Graph embeddings
-MODELS_DIR   = ARTIFACT_DIR + "models/"               # Model checkpoints
-
-# Optional: PostgreSQL for node label export
-DATABASE = 'tc_cadet_dataset_db'
-HOST = None
-USER = 'postgres'
-PASSWORD = 'password'
-PORT = '5432'
-```
-
-### OpenAI API Key
-
-To enable GPT-powered narrative summaries in reports, set your OpenAI API key:
+You need Python 3.10+, PyTorch 2.5.1, PyTorch Geometric 2.7.0 and torch-scatter 2.1.2. CPU wheels are enough; all replays run on CPU because CUDA scatter tie-breaking is nondeterministic.
 
 ```bash
-export OPENAI_API_KEY="sk-your-api-key-here"
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+pip install torch-scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.5.0+cpu.html
+pip install -r requirements-v2.txt
+python -m pytest -q tests
 ```
 
-> Without this key, reports will still be generated but GPT narrative sections will be skipped.
+The tests take a few minutes on a laptop CPU. The same environment is available as a container: `docker build -t provex:2 .` then `docker run --rm provex:2` runs the tests, and the `Dockerfile` header shows how to mount data for the experiments.
 
----
+### Reproducing the paper
 
-## 3) Quick Start
+1. **Data.** The CADETS E3 day graphs (`graph_4_*.TemporalData.simple`) and `node_mapping.json` ship in `artifact.tar.gz` (Git LFS). To rebuild them from the raw DARPA data, use KAIROS's database stages: `kairos/cadets_e3/run_pipeline.sh --full-rebuild`.
+2. **Detector.** Run `bash kairos/setup_upstream.sh`. Then train and test three seeds with `kairos/cadets_e3/run_pipeline.sh --seed N` for N = 0, 1, 2.
+3. **Explanations and tables.** Run `bash scripts/run_experiments.sh <stage>` for each stage in order: `detect`, `parity`, `gmfit`, `explain DAY`, `e6 DAY`, `e7 DAY`, `tables`. The script documents every command and output path.
 
-```bash
-make explain    # Run explanations pipeline
-make report     # Generate Markdown report
-make dashboard  # Launch Streamlit dashboard
-```
+`infra/gcp/` contains the scripts used to run all of this on Google Cloud: one CPU VM for replay and explanations, and one L4 GPU VM for KAIROS training.
 
-Artifacts land under `artifact/explanations/`.
+## Limitations
 
----
+- **One detector and one dataset.** We study KAIROS on CADETS E3 only. Conclusions may not transfer to other detectors or datasets.
+- **History is truncated.** History gating covers a window of recent batches and a capped influence closure. Truncation is flagged per event, and the paper measures its error against full re-execution.
+- **Ground truth is coarse.** It is mapped by entity name, as KAIROS keys nodes. For example, all `nginx` processes share one node.
+- **No user study yet.** Explanations are evaluated by faithfulness, stability, calibration and agreement with ground truth.
 
-## 4) Explanations Pipeline
+## Citation
 
-The PROVEX explanations pipeline (`explanations/`) orchestrates:
-
-1. **Window Collection**: Streams temporal graph with 2-hour warmup for TGN memory priming
-2. **Thresholding**: Dynamic threshold = μ + 1.5σ of window losses
-3. **Event Filtering**: High-loss events (capped at 50 per window)
-4. **GraphMask Pass**: Edge importance aggregation across events
-5. **Node Selection**: Cumulative loss ≥ threshold (fallback: top 20)
-6. **Detailed Explanations**: Per-node GNNExplainer + VA-TGExplainer analysis
-
-### Optional: Export Node Mapping
-
-The pipeline auto-creates node labels if missing. Manual export:
-
-```bash
-make node_mapping
-```
-
-### Run Explanations
-
-> ⚠️ **Note**: Explanation generation is computationally intensive. Expect **2-3 hours** on a dedicated GPU, longer on CPU.
-
-```bash
-make explain
-```
-
-### Outputs
-
-- `artifact/explanations/<window>_explanations.json` — Per-window explanation data
-- `artifact/explanations/graph_<label>_summary.json` — Global summary
-- `artifact/explanations/temporal_explanations.log` — Processing log
-
----
-
-## 5) Reporting + Dashboard
-
-### Generate Report
-
-Creates Markdown report with optional GPT narrative:
-
-```bash
-make report
-```
-
-**GPT Sections**: "What happened?", "Who's involved?", "Why flagged?", "What's missing/risky?", "What next?"
-
-### Launch Dashboard
-
-```bash
-make dashboard
-```
-
-**Dashboard Features**:
-
-- Bar chart of top GraphMask edges (relation-colored)
-- Bar chart of top nodes by average loss with threshold line
-- Minute-binned event timeline
-- GPT narrative sections aligned with relevant charts
-- Mermaid.js graph of top interactions
-
----
-
-## 6) Explanation Metrics
-
-PROVEX evaluates mask quality using:
-
-| Metric                | Description                                                     | Better     |
-| --------------------- | --------------------------------------------------------------- | ---------- |
-| **Comprehensiveness** | prob_full − prob_drop (explanation contains all necessary info) | Higher     |
-| **Sufficiency**       | prob_full − prob_keep (explanation alone is sufficient)         | Lower (≈0) |
-| **Sparsity**          | 1 − (edges_kept / edges_total)                                  | Higher     |
-| **Entropy**           | Mask ambiguity measure                                          | Lower      |
-
----
-
-## 7) Key Data Structures
-
-### Explanation JSON Schema
-
-```json
-{
-  "window_path": "string",
-  "threshold": "float",
-  "metrics": { "..." },
-  "graphmask": {
-    "per_event": ["..."],
-    "aggregate": [
-      { "src": "int", "dst": "int", "relation": "string", "weight": "float", "count": "int", "timestamps": ["..."] }
-    ]
-  },
-  "nodes": [
-    {
-      "node_id": "int",
-      "score": "float (Total Loss)",
-      "avg_score": "float",
-      "max_event_loss": "float",
-      "gnn": ["..."],
-      "va_tg": { "events": ["..."], "aggregate": ["..."] }
-    }
-  ],
-  "gpt_summary": "string (added by reporting)"
+```bibtex
+@misc{provex,
+  title         = {{PROVEX}: Faithful, Temporal Explanations for a Provenance-Based Intrusion Detector},
+  author        = {Dhanuka, Devang and Rastogi, Nidhi},
+  year          = {2025},
+  eprint        = {2512.18199},
+  archivePrefix = {arXiv}
 }
 ```
 
-### Node Mapping
-
-JSON mapping integer Node IDs to human-readable labels (e.g., `123: "Process: powershell.exe"`).
-
----
-
-## 8) Logging & Progress
-
-- Explanations log to `artifact/explanations/temporal_explanations.log`
-- Console output uses concise prints and `tqdm` progress bars
-- GPU memory checks printed only on OOM fallback or low-memory warnings
-
-```bash
-# Monitor long runs
-tail -f artifact/explanations/temporal_explanations.log
-```
-
----
-
-## 9) Environment Variables
-
-| Variable                    | Purpose                                                 |
-| --------------------------- | ------------------------------------------------------- |
-| `PROVEX_NODE_MAPPING_JSON`  | Node mapping JSON path (labels)                         |
-| `OPENAI_API_KEY`            | Enables GPT narrative in reports                        |
-| `PROVEX_CONTEXT_DEVICE`     | Tensor storage mode: `gpu`, `cpu`, `cpu_pin`, or `auto` |
-| `PROVEX_EXPLAIN_WARMUP_SEC` | Warmup margin in seconds (default: 7200)                |
-| `PROVEX_CONTEXT_GPU_BUFFER` | GPU buffer threshold in bytes (default: 512MB)          |
-| `PROVEX_CUDA_LOG_EVERY`     | CUDA memory logging frequency (0 = disabled)            |
-
----
-
-## 10) Notes
-
-- **Threshold Semantics**: The event-loss threshold is derived from per-event losses. The dashboard's "Top nodes" chart shows average loss per node with a dashed vertical line indicating the event-loss threshold context.
-- **Device Management**: GPU memory is checked before each explainer batch (~512MB free required). Falls back to CPU if insufficient.
-- **Dashboard**: Visualizations use Plotly with Pandas for data aggregation and NetworkX for graph layout.
+v1 ("PROVEX: Enhancing SOC Analyst Trust with Explainable Provenance-Based IDS") remains available at tag `v1.0-arxiv-v1`, exactly as published.

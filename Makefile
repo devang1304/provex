@@ -1,24 +1,27 @@
-# PROVEX Makefile
+# PROVEX v2. Every target runs from the repository root.
+# The experiment targets need the CADETS E3 artifacts and trained KAIROS models; see README.md.
 
-.PHONY: explain node_mapping report dashboard clean
+.PHONY: test tables reproduce clean
 
-# Run explanations pipeline
-explain:
-	python -m explanations.window_analysis
+# unit and end-to-end tests on a synthetic model (CPU, a few minutes)
+test:
+	python -m pytest -q tests
 
-# Export node ID → label mapping from PostgreSQL
-node_mapping:
-	python -m explanations.export_node_mapping
+# regenerate every number, table and case study of paper/provex_v2.tex from results/
+tables:
+	bash scripts/run_experiments.sh tables
 
-# Generate report
-report:
-	python -m reporting.generate_report
+# the full pipeline after KAIROS training (hours on a many-core CPU machine)
+reproduce:
+	bash scripts/run_experiments.sh detect
+	bash scripts/run_experiments.sh parity
+	bash scripts/run_experiments.sh gmfit
+	for d in 4_6 4_11 4_12 4_13; do bash scripts/run_experiments.sh explain $$d; done
+	bash scripts/run_experiments.sh e6 4_6
+	bash scripts/run_experiments.sh e6 4_12
+	bash scripts/run_experiments.sh e7 4_6
+	bash scripts/run_experiments.sh tables
 
-# Launch dashboard
-dashboard:
-	streamlit run reporting/streamlit_dashboard.py
-
-# Clean cache files
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete

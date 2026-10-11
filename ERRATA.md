@@ -25,3 +25,14 @@ This file lists the problems found in PROVEX v1 (arXiv:2512.18199v1; this repo a
 | H3 | The attack window was hard-coded from ground truth, and node selection compared a cumulative sum against a per-event threshold. | Explanations are driven by KAIROS's own alerts, and nodes are ranked deterministically (`provex/replay/alerts.py`). |
 | H4 | The paper describes features that have no code: alerting, ablation, parallel windows, the "60%" memory claim. | Implemented and measured, or removed from the paper. |
 | M1–M4 | Unpinned dependencies, `torch.load` failing on torch ≥ 2.6, no tests or seeds, a model forked from KAIROS without documentation, a misdescribed label field. | Pinned `requirements-v2.txt`, a test suite, seeds, upstream KAIROS rebuilt as a documented patch series (`kairos/`), and an accurate schema. |
+
+## Removed in v2
+
+These v1 components are not part of v2. They remain available at tag `v1.0-arxiv-v1`.
+
+| v1 component | Why it was removed |
+|---|---|
+| `explanations/` (v1 explainers and window analysis), `config.py`, `kairos_tgnn_model.py`, `kairos_utils.py` | Replaced by the `provex/` package and an upstream KAIROS patch series. |
+| `reporting/` (report builder, Streamlit dashboard, optional GPT narrative) | Built on the v1 output format. The v2 paper does not use or describe them. |
+| `report.pdf` | The v1 paper. It stays on arXiv as v1. |
+| `requirements.txt`, `environment.yml`, `.env.example` | v1 environment. v2 pins `requirements-v2.txt`. |

@@ -10,7 +10,7 @@ so upstream state dicts load unchanged. Two differences from upstream are delibe
 """
 from __future__ import annotations
 
-import sys
+
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Tuple
@@ -119,28 +119,12 @@ def load_checkpoint(path: str | Path, device: str | torch.device = "cpu", *, leg
         link_pred.load_state_dict(obj["link_pred"])
     elif isinstance(obj, (list, tuple)) and len(obj) >= 3:
         raise ValueError(
-            "Legacy pickled checkpoint: load it with load_legacy_checkpoint(), which needs the v1 "
-            "model module importable as 'model'.")
+            "This is a v1 pickled checkpoint (the forked KAIROS model). v2 loads state-dict checkpoints "
+            "only; use tag v1.0-arxiv-v1 for the v1 model.")
     else:
         raise ValueError(f"Unrecognised checkpoint format: {path}")
     return _finish(memory, gnn, link_pred, hp, device)
 
-
-def load_legacy_checkpoint(path: str | Path, legacy_module, device="cpu", rel_t_sign: int = -1):
-    """Load the v1 fork pickle by aliasing ``legacy_module`` as ``model`` and copying weights."""
-    sys.modules["model"] = legacy_module
-    old_memory, old_gnn, old_lp = torch.load(path, map_location="cpu", weights_only=False)[:3]
-    hp = KairosHParams(
-        num_nodes=int(old_memory.num_nodes), raw_msg_dim=int(old_memory.raw_msg_dim),
-        memory_dim=int(old_memory.memory_dim), time_dim=int(old_memory.time_dim),
-        embedding_dim=int(old_gnn.conv2.out_channels), num_edge_types=int(old_lp.lin_seq[-1].out_features),
-        neighbor_size=64, rel_t_sign=rel_t_sign,
-    )
-    memory, gnn, link_pred = build(hp)
-    memory.load_state_dict(old_memory.state_dict(), strict=False)
-    gnn.load_state_dict(old_gnn.state_dict())
-    link_pred.load_state_dict(old_lp.state_dict())
-    return _finish(memory, gnn, link_pred, hp, device)
 
 
 def _finish(memory, gnn, link_pred, hp, device):
