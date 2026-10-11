@@ -20,11 +20,13 @@ from collections import defaultdict
 from pathlib import Path
 
 METHOD_ORDER = ["joint", "joint-cf", "joint-edges", "variational", "graphmask", "gnnexplainer-anomaly",
-                "gnnexplainer-v1", "occlusion", "integrated_gradients", "gradient", "attention", "recency", "random"]
+                "gnnexplainer-v1", "mcts", "occlusion", "integrated_gradients", "gradient", "attention", "recency",
+                "random"]
 METHOD_LABEL = {"joint": "PROVEX joint (preserve)", "joint-cf": "PROVEX joint (counterfactual)",
                 "joint-edges": "PROVEX joint, edges only", "variational": "PROVEX variational",
                 "graphmask": "GraphMask-TC", "gnnexplainer-anomaly": "GNNExplainer + our objective",
-                "gnnexplainer-v1": "GNNExplainer (v1 objective)", "occlusion": "Occlusion (LOO)",
+                "gnnexplainer-v1": "GNNExplainer (v1 objective)", "mcts": "MCTS (T-GNNExplainer-style)",
+                "occlusion": "Occlusion (LOO)",
                 "integrated_gradients": "Integrated gradients", "gradient": "Gradient", "attention": "Attention",
                 "recency": "Recency", "random": "Random"}
 DAY_LABEL = {"4_6": "04-06", "4_11": "04-11", "4_12": "04-12", "4_13": "04-13"}
@@ -80,6 +82,10 @@ def main():
     for p in sorted(glob.glob(str(R / "kairos" / "seed_*" / "detection_metrics.json"))):
         det[Path(p).parent.name] = json.loads(Path(p).read_text())
     nums["NumSeeds"] = str(len(det)) if det else "n/a"
+    hit = sorted(a for a in {k for d in det.values() for k in d.get("per_attack", {})}
+                 if all(d["per_attack"].get(a, {}).get("detected") for d in det.values()))
+    nums["NumAttacksDetected"] = str(len(hit)) if det else "n/a"
+    nums["AttacksDetected"] = (" and ".join("04-" + a[-2:] for a in hit) or "none") if det else "n/a"
     rows = []
     attacks = sorted({k for d in det.values() for k in d.get("per_attack", {})})
     for att in attacks:
@@ -107,6 +113,11 @@ def main():
         for r in load_jsonl(p):
             r["_model_seed"] = Path(p).parent.name
             recs.append(r)
+    # explain appends to its .jsonl, so a re-run shard repeats events: keep the last record per event
+    uniq = {}
+    for r in recs:
+        uniq[(r["_model_seed"], r["event"]["day"], r["event"]["event"])] = r
+    recs = list(uniq.values())
     # taxonomy
     tax = defaultdict(lambda: defaultdict(int))
     for r in recs:
@@ -120,6 +131,10 @@ def main():
     nums["FracPriorAlerts"] = fmt(tax[("all", "all")]["prior"] / tot, 2, pct=True) if tot else "n/a"
     nums["FracWindowAlerts"] = fmt(tax[("all", "all")]["window"] / tot, 2, pct=True) if tot else "n/a"
     nums["FracLongMemoryAlerts"] = fmt(tax[("all", "all")]["long_memory"] / tot, 2, pct=True) if tot else "n/a"
+    # removing the whole window does not flip prior / long-memory alerts; did a smaller removal?
+    cf = [ex for r in recs if r["alert_class"] != "window"
+          for ex in r["explanations"] if ex["method"] == "joint-cf" and ex["seed"] == 0]
+    nums["CFFoundNonWindow"] = f"{sum(bool(ex['valid']) for ex in cf)}/{len(cf)} such alerts" if cf else "n/a"
     rows = []
     for (d, grp), c in sorted(tax.items()):
         if d == "all":
@@ -199,7 +214,8 @@ def main():
                  "max err " + fmt(cal.get("max_abs_err"), 3)])
     (O / "tab_stability_calibration.tex").write_text(table(
         "Stability across 5 explainer seeds (top-5 Jaccard, Kendall $\\tau_b$) and calibration of the "
-        "variational inclusion probabilities against exact posteriors.",
+        "variational inclusion probabilities against exact posteriors. GraphMask is deterministic at inference "
+        "and the baselines have no seed, so they are omitted.",
         "tab:stab", ["Method", "Top-5 Jaccard", "Kendall $\\tau_b$"], rows, "lrr"))
 
     # runtime
@@ -216,6 +232,13 @@ def main():
     nums["LocalVsFullMedianErr"] = fmt(lvf.get("median_rel_err"), 3)
     nums["LocalVsFullSpearman"] = fmt(lvf.get("spearman"), 3)
     nums["NumExactDeletionsTest"] = str(meta.get("exact_deletions_test", 100))
+    gmf = R / "graphmask" / "graphmask_seed0.pt.json"
+    gm_final = json.loads(gmf.read_text()).get("final", {}) if gmf.exists() else {}
+    nums["GMTrainEvents"] = str(gm_final.get("n_events_trained", "n/a"))
+    nums["GMOpenFrac"] = fmt(gm_final.get("open_frac_hard"), 2, pct=True)
+    nums["GMValidFrac"] = fmt(gm_final.get("frac_valid_hard"), 2, pct=True)
+    nums["GMAllClosedDev"] = fmt(gm_final.get("dev_all_closed_mean"), 2, pct=True)
+    nums["GMAllClosedValid"] = fmt(gm_final.get("frac_valid_all_closed"), 2, pct=True)
     nums["TopN"] = str(meta.get("top_n", 25)); nums["SampleN"] = str(meta.get("sample_n", 25))
     nums["ReleaseTag"] = meta.get("release_tag", "v2.0.0")
     nums["ReleaseDOI"] = tex_escape(meta.get("release_doi", "the GitHub release"))
@@ -223,7 +246,8 @@ def main():
     nums["HardwareGPU"] = tex_escape(meta.get("hardware_gpu", "n/a"))
     (O / "results_text.tex").write_text(
         f"% generated\nReplay parity with the detector held on {nums['ParityDaysOK']} test days. "
-        f"For history gating, the median relative error of the first-order replay against full re-execution "
+        f"For history gating, the median relative error of the functional replay (influence-closure scope) "
+        f"against full re-execution "
         f"was {nums['LocalVsFullMedianErr']} (Spearman {nums['LocalVsFullSpearman']}).\n")
     if not (O / "case_studies.tex").exists():
         (O / "case_studies.tex").write_text("% generated by scripts/make_case_studies.py\n")

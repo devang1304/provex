@@ -79,9 +79,21 @@ def test_graphmask_fit_and_explain(tiny):
     models = [EventModel(memory, gnn, lp, caps[e], use_history=False, dtype=torch.float64) for e in evs]
     gm = GraphMaskTC(gnn).double()
     hist = gm.fit(models, epochs=3, log=lambda r: None)
-    assert len(hist) == 3
+    assert len(hist) == 4 and hist[-1]["final"] and 0.0 <= hist[-1]["open_frac_hard"] <= 1.0
+    assert all(math.isfinite(r["mean_open_frac"]) for r in hist[:3])     # no NaN from empty gate sets
     ex = gm.explain(models[0], tau=0.0)
     assert len(ex.scores) == models[0].num_items
+
+
+def test_graphmask_gate_bound_keeps_gradient():
+    """A gate pinned at the lower bound must still get gradient, or it can never reopen."""
+    from provex.explain.graphmask_tc import GateNet
+    g = GateNet(heads=2, channels=3, init_bias=-100.0)
+    q = k = v = torch.randn(5, 2, 3)
+    a = g(q, k, v, torch.zeros(5, 2))
+    assert ((a > -6) & (a < -4)).all()
+    a.sum().backward()
+    assert g.out.bias.grad.abs().item() > 0
 
 
 def test_calibration_enumeration_runs(tiny):
@@ -91,3 +103,53 @@ def test_calibration_enumeration_runs(tiny):
     cal = posterior_calibration(em, ex, tau, n=6)
     assert cal["n"] == 6 and all(0 <= p <= 1 for p in cal["pi_exact"])
     assert 0 <= ece(list(zip(cal["pi_var"], cal["pi_exact"]))) <= 1
+
+
+def test_joint_names_and_floor_alerts(tiny):
+    """Counterfactual records are named joint-cf; when removing every item keeps the alert, preserve returns
+    the empty set but counterfactual mode still searches (L is not monotone in the removed set)."""
+    em, _, _ = _top_event(tiny)
+    assert JointMaskExplainer("preserve").name == "joint"
+    assert JointMaskExplainer("counterfactual").name == "joint-cf"
+    assert JointMaskExplainer("preserve", history=False).name == "joint-edges"
+    L_floor = float(em.loss(torch.zeros(em.num_items, dtype=em.dtype), hard=True))
+    low = L_floor - 1.0
+    pre = JointMaskExplainer("preserve", epochs=20).explain(em, low)
+    assert pre.method == "joint" and pre.valid and pre.selected == [] and pre.extra["floor_alert"]
+    cf = JointMaskExplainer("counterfactual", epochs=40, seed=0).explain(em, low)
+    assert cf.method == "joint-cf" and cf.extra["floor_alert"]
+    assert all(not math.isnan(s) for s in cf.scores)                  # the search ran
+    assert cf.extra["cf_found"] == cf.valid
+    if cf.valid:                                                      # a reported flip must be real
+        g = torch.ones(em.num_items, dtype=em.dtype)
+        for e in cf.selected:
+            g[em.item_pos[e]] = 0
+        assert float(em.loss(g, hard=True)) < low
+
+
+def test_alert_class_window_first():
+    assert metrics.alert_class({"nothing": 1.0, "prior_only": 5.0}, 2.0) == "window"
+    assert metrics.alert_class({"nothing": 3.0, "prior_only": 5.0}, 2.0) == "prior"
+    assert metrics.alert_class({"nothing": 3.0, "prior_only": 1.0}, 2.0) == "long_memory"
+
+def test_mcts_subset_is_checked(tiny):
+    from provex.explain.mcts import mcts_explain
+    em, tau, _ = _top_event(tiny)
+    ex = mcts_explain(em, tau, n_candidates=12, k_max=4, n_sim=24)
+    assert ex.method == "mcts" and len(ex.scores) == em.num_items
+    assert len(ex.selected) <= 4 and set(ex.selected) <= set(em.items.tolist())
+    g = torch.zeros(em.num_items, dtype=em.dtype)
+    for e in ex.selected:
+        g[em.item_pos[e]] = 1
+    L_keep = float(em.loss(g, hard=True))
+    assert abs(L_keep - ex.L_selected) < 1e-9 and ex.valid == (L_keep >= tau)
+    top = sorted(range(em.num_items), key=lambda k: -ex.scores[k])[:len(ex.selected)]
+    assert {int(em.items[k]) for k in top} == set(ex.selected)          # the subset is ranked first
+
+def test_load_gt_nodes_formats(tmp_path):
+    import json as _json
+    from provex.evaluate.ground_truth import load_gt_nodes
+    (tmp_path / "kairos_nodes_Nginx_Backdoor_06.json").write_text(_json.dumps(
+        {"attack": "Nginx_Backdoor_06", "nodes": {"5": {"name": "file: /tmp/x"}}, "rows": [], "stats": {}}))
+    (tmp_path / "kairos_nodes_Nginx_Backdoor_12.json").write_text(_json.dumps({"9": "subject: nginx"}))
+    assert load_gt_nodes(tmp_path) == {"4_6": {5}, "4_12": {9}}

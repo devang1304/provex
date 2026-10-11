@@ -63,7 +63,8 @@ history window (validated against full re-execution);
 \end{enumerate}
 We also provide a faithful GraphMask for attention-based message passing.
 
-On all four DARPA TC E3 CADETS attacks, with KAIROS retrained over \NumSeeds{} seeds, we report:
+We retrain KAIROS with \NumSeeds{} seeds on DARPA TC E3 CADETS. It detects \NumAttacksDetected{} of the
+four attacks under its own alert rule, and we explain every alert it raises. We report:
 \begin{itemize}
 \item faithfulness against six baselines;
 \item agreement with node-level ground truth;
@@ -192,16 +193,18 @@ minimal set whose absence would have prevented it. We relax the constraint viola
 $T\,\mathrm{softplus}(\cdot/T)$. Softplus keeps gradients alive where a hinge would be flat. Working in
 loss space avoids $-\log(1-p)$, whose gradient vanishes for $p\approx 10^{-11}$.
 
-\textbf{Alert taxonomy.} Some alerts cannot be explained by history at all. We compute three scores:
+\textbf{Alert taxonomy.} Not every alert is explained by recent history. We compute three scores:
 \begin{itemize}
 \item $L_\varnothing$: all items removed;
 \item $L_{\text{prior}}$: all memories zeroed and all edges removed, i.e.\ the type prior alone;
 \item the full score.
 \end{itemize}
-An alert is \emph{prior-driven} if $L_{\text{prior}}\ge\tau$. It is \emph{window-explainable} if
-$L_\varnothing<\tau$, so a counterfactual exists inside the window. Otherwise it is
-\emph{long-memory-driven}. A preserve explanation of a prior-driven alert is empty, and a counterfactual
-does not exist. We report these cases rather than optimise them.
+An alert is \emph{window-explainable} if $L_\varnothing<\tau$: removing the whole window flips it, so a
+counterfactual exists inside the window. Otherwise it is \emph{prior-driven} if $L_{\text{prior}}\ge\tau$
+and \emph{long-memory-driven} if not. For these two classes the empty set already sustains the alert, so
+the preserve explanation is empty. Removing the whole window does not flip them, but $L$ is not monotone
+in the removed set, so a smaller removal still might. We therefore run the counterfactual search on every
+alert and report how often it finds one outside the window-explainable class (\CFFoundNonWindow{}).
 
 \section{Exact, Differentiable History Gating}
 \label{sec:history}
@@ -268,18 +271,33 @@ and report expected calibration error.
 node features. TransformerConv instead passes query, key and value, so those hooks fail on it. Our
 version follows GraphMask~\cite{graphmask}:
 \begin{itemize}
-\item amortised per-layer gate networks read $(\mathbf q_i,\mathbf k_j{+}\mathbf e,\mathbf v_j{+}\mathbf e)$;
+\item amortised per-layer gate networks read $(\mathbf q_i,\mathbf k_j{+}\mathbf e,\mathbf v_j{+}\mathbf e)$
+  and the edge's role for the explained event (whether its target or source is an endpoint). Without the
+  role, an amortised gate cannot tell which edges reach a link prediction (in the last layer only edges
+  into the two endpoints do), and training degenerates to one switch per layer;
 \item a gated-off edge has its attention score and value replaced by learned baselines, with the softmax
   recomputed;
-\item training minimises $L_0$ subject to $|L_{\text{masked}}-L|/\max(L,1)\le 5\%$ on validation-day
-  alerts.
+\item training minimises $L_0$ subject to $|L_{\text{masked}}-L|/\max(L,1)\le 5\%$ on anomalous events
+  sampled across the validation day;
+\item training starts on the feasible side, with a large initial Lagrange multiplier and a slow dual step,
+  and log-$\alpha$ is bounded by a leaky clamp. With the usual initialisation every gate closes in the first
+  epoch and never reopens, since a fully closed hard-concrete gate receives no gradient. As in GraphMask,
+  the constraint holds on average over events. Gates can still collapse later in training, so we keep the
+  sparsest epoch whose deviation on held-out validation events meets the constraint.
 \end{itemize}
-It answers which neighbour edges the model \emph{needs}, and does not cover memory.
+It answers which neighbour edges the model \emph{needs}, and does not cover memory. On held-out
+validation events, replacing every neighbour edge with the learned baselines changes $L$ by
+\GMAllClosedDev{} on average and already meets the allowance on \GMAllClosedValid{} of them. Trained on
+\GMTrainEvents{} events, the selected gates keep \GMOpenFrac{} of the edges open and meet the allowance on
+\GMValidFrac{} of held-out events.
 
 \textbf{Baselines.} We compare against the following, all on the same items:
 \begin{itemize}
 \item random, recency, attention rollout, gradient, integrated gradients and leave-one-out occlusion;
 \item PyG GNNExplainer with our preserve objective (neighbour edges only);
+\item a temporal-GNN explainer in the style of T-GNNExplainer~\cite{tgnnexplainer}: Monte-Carlo tree
+  search over subsets of at most 10 of the same items, scored by the anomaly with only the subset kept.
+  We replace its learned navigator with a gradient prior, so this baseline needs no training;
 \item the v1 configuration (GNNExplainer minimising cross-entropy of the true type), as a documented
   counter-example.
 \end{itemize}
@@ -292,8 +310,10 @@ them.
 
 We rebuild KAIROS from upstream at a pinned commit, with documented patches: seeds, all test days, all
 four attacks, and PyG~2.7 compatibility. We use the upstream hyper-parameters and train on 04-02 to
-04-04 with \NumSeeds{} seeds. Days 04-05 and 04-10 are used for validation and thresholds, and the rest
-for testing.
+04-04 with \NumSeeds{} seeds. Days 04-03 to 04-05 initialise the rare-node scores of the alert queues,
+04-05 is the validation day, and 04-06 to 04-13 are test days. Under its own alert rule, KAIROS detects
+\NumAttacksDetected{} of the four attacks (\AttacksDetected{}; Table~\ref{tab:detection}). We explain
+every alert it raises, true and false positives alike; the missed attacks have no alert to explain.
 
 \textbf{What is explained.} We explain the events KAIROS alerts on. These are the anomalous events
 ($L\ge\tau_w$) in every window of every alerted queue. For each window we take the top \TopN{} events by

@@ -21,7 +21,10 @@ def load_gt_nodes(gt_dir: str | Path) -> Dict[str, Set[int]]:
         day = ATTACK_DAY.get(attack)
         if day is None:
             continue
-        nodes = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        # node_gt.py writes {"attack", "nodes": {index_id: {...}}, "rows", "unmapped", "stats"};
+        # a plain {index_id: label} dict or a list of ids is accepted too
+        nodes = raw["nodes"] if isinstance(raw, dict) and isinstance(raw.get("nodes"), dict) else raw
         ids = {int(k) for k in (nodes.keys() if isinstance(nodes, dict) else nodes)}
         out.setdefault(day, set()).update(ids)
     return out

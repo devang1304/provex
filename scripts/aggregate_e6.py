@@ -20,19 +20,22 @@ from provex.evaluate.metrics import agreement, stability
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--records", required=True); ap.add_argument("--out", default="results")
     a = ap.parse_args()
-    runs = defaultdict(lambda: defaultdict(dict))        # method -> event -> seed -> scores
+    runs = defaultdict(lambda: defaultdict(dict))        # method -> (day, event) -> seed -> scores
     pairs = []
+    latest = {}                                          # a re-run appends: keep the last record
     for p in glob.glob(a.records):
         for line in open(p, encoding="utf-8"):
             if not line.strip():
                 continue
             r = json.loads(line)
-            for ex in r["explanations"]:
-                if "scores_all" in ex:
-                    runs[ex["method"]][r["event"]["event"]][ex["seed"]] = ex["scores_all"]
-                cal = ex.get("metrics", {}).get("calibration")
-                if cal:
-                    pairs += list(zip(cal["pi_var"], cal["pi_exact"]))
+            for ex in r["explanations"]:            # event ids are per day, so key by (day, event)
+                latest[(r["event"]["day"], r["event"]["event"], ex["method"], ex["seed"])] = ex
+    for (day, ev, m, seed), ex in latest.items():
+        if "scores_all" in ex:
+            runs[m][(day, ev)][seed] = ex["scores_all"]
+        cal = ex.get("metrics", {}).get("calibration")
+        if cal:
+            pairs += list(zip(cal["pi_var"], cal["pi_exact"]))
     stab = {}
     for m, evs in runs.items():
         jac, tau = [], []

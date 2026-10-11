@@ -65,6 +65,11 @@ class JointMaskExplainer:
         self.dual_lr, self.size_coef, self.history, self.seed = dual_lr, size_coef, history, seed
         self.max_repair = max_repair
 
+    @property
+    def name(self) -> str:
+        """Record name: joint / joint-cf (edges + history), joint-edges / joint-edges-cf (edges only)."""
+        return ("joint" if self.history else "joint-edges") + ("-cf" if self.mode == "counterfactual" else "")
+
     def _gates_for(self, z: Tensor, em: EventModel) -> Tensor:
         if self.history:
             return z
@@ -79,16 +84,17 @@ class JointMaskExplainer:
         with torch.no_grad():
             L_full = float(em.loss(ones, hard=True))
             L_floor = float(em.loss(torch.zeros_like(ones), hard=True))
-        intrinsic = L_floor >= tau        # alert holds even with every item removed
-        if intrinsic:
-            # preserve: the minimal sustaining set is empty; counterfactual: no item set can flip
-            # the alert. Report it instead of optimising (context does not explain this anomaly).
+        floor_alert = L_floor >= tau      # the alert holds even with every item removed
+        if floor_alert and self.mode == "preserve":
+            # The empty set already sustains the alert, so the minimal preserve explanation is empty.
+            # Counterfactual mode still searches: L is not monotone in the removed set, so removing a
+            # subset can flip an alert that removing every item does not.
             nan = [float("nan")] * n
             return Explanation(
-                method="joint" if self.history else "joint-edges", mode=self.mode, items=em.items.tolist(),
-                scores=nan, selected=[], valid=(self.mode == "preserve"), repaired=0, L_full=L_full,
+                method=self.name, mode=self.mode, items=em.items.tolist(),
+                scores=nan, selected=[], valid=True, repaired=0, L_full=L_full,
                 L_selected=L_floor, tau=tau, runtime_s=time.perf_counter() - t0,
-                extra={"intrinsic": True, "L_floor": L_floor, "cf_feasible": False, "n_items": n})
+                extra={"floor_alert": True, "L_floor": L_floor, "n_items": n})
         log_alpha = torch.full((n,), 3.0, dtype=em.dtype, device=em.device, requires_grad=True)
         opt = torch.optim.Adam([log_alpha], lr=self.lr)
         lam = 1.0
@@ -113,13 +119,16 @@ class JointMaskExplainer:
             valid, L_sel, repaired, keep = self._check_and_repair(em, keep, imp, tau, active)
         sel_mask = keep if self.mode == "preserve" else ~keep
         sel_mask = sel_mask & active
+        extra = {"lambda": lam, "n_items": n, "n_active": int(active.sum()), "floor_alert": floor_alert,
+                 "L_floor": L_floor}
+        if self.mode == "counterfactual":
+            extra["cf_found"] = bool(valid)   # found by search + repair; not a proof when False
         return Explanation(
-            method="joint" if self.history else "joint-edges", mode=self.mode,
+            method=self.name, mode=self.mode,
             items=em.items.tolist(), scores=imp.tolist(),
             selected=em.items[sel_mask.cpu()].tolist(), valid=valid, repaired=repaired,
             L_full=L_full, L_selected=L_sel, tau=tau, runtime_s=time.perf_counter() - t0,
-            extra={"lambda": lam, "n_items": n, "n_active": int(active.sum()), "intrinsic": False,
-                   "L_floor": L_floor, "cf_feasible": True})
+            extra=extra)
 
     @torch.no_grad()
     def _check_and_repair(self, em: EventModel, keep: Tensor, imp: Tensor, tau: float, active: Tensor):

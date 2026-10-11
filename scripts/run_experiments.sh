@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # PROVEX v2 experiments (runs on a GCP VM from /data/provex with .venv active).
 #   bash scripts/run_experiments.sh <stage> [args]
-# stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY | e7 DAY | tables | push
+# stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY [WORKERS] | e7 DAY | tables | push
+# explain env: METHODS, TOP_N, SAMPLE_N, MAX_EVENTS (0 = all), EXPL_OUT (default results/expl/seed_$SEED)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-source .venv/bin/activate
+if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi   # VM venv; Docker uses system python
 BUCKET=${BUCKET:-gs://provex-v2-dd1304-artifacts}
 SEED=${SEED:-0}
 export KAIROS_GRAPHS_DIR=$PWD/artifact/graph_embeddings/ KAIROS_NODE_MAP_JSON=$PWD/artifact/explanations/node_mapping.json
@@ -32,28 +33,40 @@ case "$stage" in
             python -m provex.pipeline parity --pass1 $R/pass1/pass1_$d.pt --kairos-windows $K/windows.json --day $d --out $R/parity || true
           done ;;
   gmfit)  python -m provex.pipeline graphmask-fit --ckpt $CKPT --day-file $G/graph_4_5.TemporalData.simple --day 4_5 \
-            --out $R/graphmask/graphmask_seed$SEED.pt --epochs ${GM_EPOCHS:-20} ;;
-  explain) d=${1:?day}; W=${2:-$(nproc)}
+            --out $R/graphmask/graphmask_seed$SEED.pt --epochs ${GM_EPOCHS:-40} ;;
+  explain) d=${1:?day}; W=${2:-$(nproc)}; O=${EXPL_OUT:-$R/expl/seed_$SEED}; mkdir -p $O
           [ -f $R/pass1/pass1_$d.pt ] || python -m provex.pipeline pass1 --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple --day $d --out $R/pass1
+          pids=()
           for i in $(seq 0 $((W-1))); do
             python -m provex.pipeline explain --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple --day $d \
               --alerts $K/alerts.json --names $NAMES --gt-dir $GT --pass1 $R/pass1/pass1_$d.pt \
               --graphmask $R/graphmask/graphmask_seed$SEED.pt \
-              --methods ${METHODS:-joint,joint-cf,joint-edges,variational,graphmask,gnnx-anomaly,gnnx-v1,baselines} \
-              --top-n ${TOP_N:-25} --sample-n ${SAMPLE_N:-25} --shard $i/$W --out $R/expl/seed_$SEED > $R/expl_${d}_shard$i.log 2>&1 &
-          done; wait ;;
-  e6)     d=${1:?day}
-          python -m provex.pipeline explain --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple --day $d \
-            --alerts $K/alerts.json --names $NAMES --gt-dir $GT --pass1 $R/pass1/pass1_$d.pt \
-            --graphmask $R/graphmask/graphmask_seed$SEED.pt --methods joint,joint-cf,variational,gnnx-anomaly,graphmask \
-            --seeds 0,1,2,3,4 --full-scores --calibration --only-class window --max-events ${E6_EVENTS:-40} \
-            --top-n 25 --sample-n 25 --out $R/e6 ;;
+              --methods ${METHODS:-joint,joint-cf,joint-edges,variational,graphmask,gnnx-anomaly,gnnx-v1,mcts,baselines} \
+              --top-n ${TOP_N:-25} --sample-n ${SAMPLE_N:-25} --max-events ${MAX_EVENTS:-0} --shard $i/$W \
+              --out $O > $O/explain_${d}_shard$i.log 2>&1 &
+            pids+=($!)
+          done
+          fail=0; for p in "${pids[@]}"; do wait $p || fail=1; done   # a crashed shard fails the stage
+          [ $fail -eq 0 ] || { echo "explain $d: a shard failed, see $O/explain_${d}_shard*.log"; exit 1; } ;;
+  e6)     d=${1:?day}; W=${2:-$(nproc)}; mkdir -p $R/e6
+          pids=()
+          for i in $(seq 0 $((W-1))); do
+            python -m provex.pipeline explain --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple --day $d \
+              --alerts $K/alerts.json --names $NAMES --gt-dir $GT --pass1 $R/pass1/pass1_$d.pt \
+              --methods joint,joint-cf,variational,gnnx-anomaly \
+              --seeds 0,1,2,3,4 --full-scores --calibration --only-class window --subsample ${E6_EVENTS:-60} \
+              --top-n 25 --sample-n 25 --shard $i/$W --out $R/e6 > $R/e6/e6_${d}_shard$i.log 2>&1 &
+            pids+=($!)
+          done
+          fail=0; for p in "${pids[@]}"; do wait $p || fail=1; done
+          [ $fail -eq 0 ] || { echo "e6 $d: a shard failed, see $R/e6/e6_${d}_shard*.log"; exit 1; } ;;
   e7)     d=${1:?day}
           cat $R/expl/seed_$SEED/explanations_${d}*.jsonl > $R/expl_${d}_all.jsonl
           python -m provex.pipeline local-vs-full --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple \
             --explanations $R/expl_${d}_all.jsonl --out $R/local_vs_full.json --max-alerts ${E7_ALERTS:-30} --workers $(nproc) ;;
   tables) python scripts/aggregate_e6.py --records "$R/e6/*.jsonl" --out $R || true
-          mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated ;;
+          mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated
+          python scripts/make_case_studies.py --results $R --gt-dir $GT --out paper/generated ;;
   push)   gcloud storage rsync -r $R $BUCKET/results
           gcloud storage rsync -r paper/generated $BUCKET/paper_generated ;;
   *) echo "unknown stage $stage"; exit 2 ;;

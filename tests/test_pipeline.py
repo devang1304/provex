@@ -25,7 +25,12 @@ def test_pipeline_end_to_end(tiny, tmp_path):
     names = tmp_path / "names.json"
     names.write_text(json.dumps({str(i): f"subject: proc{i}" for i in range(hp.num_nodes)}))
     gt = tmp_path / "gt"; gt.mkdir()
-    (gt / "kairos_nodes_06.json").write_text(json.dumps({"3": "subject: proc3", "7": "subject: proc7"}))
+    # the format kairos/cadets_e3/node_gt.py writes (patch 07)
+    (gt / "kairos_nodes_Nginx_Backdoor_06.json").write_text(json.dumps(
+        {"attack": "Nginx_Backdoor_06", "mode": "name",
+         "nodes": {"3": {"name": "subject: proc3", "type": "subject", "uuids": ["U3"], "mapped_by": ["name:subject"]},
+                   "7": {"name": "subject: proc7", "type": "subject", "uuids": ["U7"], "mapped_by": ["name:subject"]}},
+         "rows": [], "unmapped": [], "stats": {"gt_rows": 2, "mapped_rows": 2, "kairos_nodes": 2}}))
     out = tmp_path / "out"
     pipeline.main(["pass1", "--ckpt", str(ck), "--day-file", str(day), "--day", "4_6", "--out", str(out / "pass1"),
                    "--batch-size", "32", "--window-ns", str(60 * 10**9)])
@@ -48,6 +53,7 @@ def test_pipeline_end_to_end(tiny, tmp_path):
     assert files
     recs = [json.loads(l) for f in files for l in f.read_text().splitlines() if l.strip()]
     assert recs and all(r["alert_class"] in ("prior", "long_memory", "window") for r in recs)
+    assert {"joint", "joint-cf", "variational"} <= {ex["method"] for r in recs for ex in r["explanations"]}
     for r in recs:
         for ex in r["explanations"]:
             for it in ex["top_items"]:
@@ -59,3 +65,9 @@ def test_pipeline_end_to_end(tiny, tmp_path):
     subprocess.run([sys.executable, "scripts/make_tables.py", "--results", str(res), "--out", str(tmp_path / "gen")],
                    check=True)
     assert (tmp_path / "gen" / "numbers.tex").exists() and (tmp_path / "gen" / "tab_faithfulness.tex").exists()
+    assert "CFFoundNonWindow" in (tmp_path / "gen" / "numbers.tex").read_text()
+    subprocess.run([sys.executable, "scripts/make_case_studies.py", "--results", str(res), "--gt-dir", str(gt),
+                    "--out", str(tmp_path / "gen"), "--days", "4_6,4_11"], check=True)
+    cs = (tmp_path / "gen" / "case_studies.tex").read_text()
+    assert "\\paragraph{04-06}" in cs and "selection tier" in cs          # every fixture window is a GT window
+    assert "No explanation records were produced for 04-11." in cs

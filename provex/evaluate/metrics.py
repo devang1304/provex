@@ -70,13 +70,18 @@ def channel_decomposition(em: EventModel) -> Dict[str, float]:
 
 
 def alert_class(ch: Dict[str, float], tau: float) -> str:
-    """prior: anomalous with no memory and no edges (event-type prior alone);
-    window: some removal inside the history window drops it below tau (counterfactual exists);
-    long_memory: neither, so the anomaly comes from memory accumulated before the window."""
-    if ch["prior_only"] >= tau:
-        return "prior"
+    """window: removing every item of the history window drops L below tau, so a counterfactual
+    exists inside the window (checked first: it is the actionable case even if the prior is high);
+    prior: removing the window leaves the alert standing and the event-type prior alone (no memory,
+    no edges) is anomalous;
+    long_memory: removing the window leaves the alert standing but the prior alone does not, so it
+    rests on memory accumulated before the window.
+    For prior and long_memory, removing the whole window does not flip the alert; L is not monotone in
+    the removed set, so a smaller removal still might (the counterfactual search reports cf_found)."""
     if ch["nothing"] < tau:
         return "window"
+    if ch["prior_only"] >= tau:
+        return "prior"
     return "long_memory"
 
 def normalised_dloss(L_full: float, L_k: float, L_floor: float) -> float:

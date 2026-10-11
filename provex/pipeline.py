@@ -92,11 +92,12 @@ def cmd_parity(a):
 
 
 # ---------------------------------------------------------------------------- explain
-def _metrics_for(em, ex, tau, data, gt, exclude):
+def _metrics_for(em, ex, tau, data, gt, exclude, window=True):
     out = {"deletion": M.deletion_curve(em, ex.scores, KS), "insertion": M.insertion_curve(em, ex.scores, KS)}
     out["flip_at_k"] = {k: M.alert_flip(v, tau) for k, v in out["deletion"].items()}
     out["keep_at_k"] = {k: M.alert_keep(v, tau) for k, v in out["insertion"].items()}
-    out["min_cf_size"] = M.min_cf_size(em, ex.scores, tau)
+    if window:   # a linear prefix scan; elsewhere removing every item does not flip, so it rarely ends early
+        out["min_cf_size"] = M.min_cf_size(em, ex.scores, tau)
     if gt is not None:
         ent = M.entity_scores(ex.items, ex.scores, data, exclude)
         out["gt"] = {f"p@{k}": M.precision_at_k(ent, gt, k) for k in (1, 3, 5, 10)}
@@ -105,30 +106,32 @@ def _metrics_for(em, ex, tau, data, gt, exclude):
 
 
 def _run_methods(em, tau, data, methods, seed, graphmask):
-    exs = []
+    """Yields each explanation as soon as it is computed (so the caller can log per-method timing)."""
     if "joint" in methods:
-        exs.append(JointMaskExplainer("preserve", seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("preserve", seed=seed).explain(em, tau))
     if "joint-cf" in methods:
-        exs.append(JointMaskExplainer("counterfactual", seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("counterfactual", seed=seed).explain(em, tau))
     if "joint-edges" in methods:
-        exs.append(JointMaskExplainer("preserve", history=False, seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("preserve", history=False, seed=seed).explain(em, tau))
     if "variational" in methods:
-        exs.append(VariationalTemporalExplainer(seed=seed).explain(em, tau, data.t))
+        yield (VariationalTemporalExplainer(seed=seed).explain(em, tau, data.t))
     if "graphmask" in methods and graphmask is not None:
-        exs.append(graphmask.explain(em, tau))
+        yield (graphmask.explain(em, tau))
     if "gnnx-anomaly" in methods:
-        exs.append(anomaly_gnnexplainer(em, tau, seed=seed))
+        yield (anomaly_gnnexplainer(em, tau, seed=seed))
     if "gnnx-v1" in methods:
-        exs.append(v1_gnnexplainer(em, tau, seed=seed))
+        yield (v1_gnnexplainer(em, tau, seed=seed))
+    if "mcts" in methods:
+        from .explain.mcts import mcts_explain
+        yield (mcts_explain(em, tau))
     if "baselines" in methods:
         for name, fn in baselines.BASELINES.items():
             if name == "recency":
-                exs.append(fn(em, tau, data.t))
+                yield (fn(em, tau, data.t))
             elif name == "random":
-                exs.append(fn(em, tau, seed=seed))
+                yield (fn(em, tau, seed=seed))
             else:
-                exs.append(fn(em, tau))
-    return exs
+                yield (fn(em, tau))
 
 
 def cmd_explain(a):
@@ -158,6 +161,8 @@ def cmd_explain(a):
             targets.append(ev); tau_of[ev] = tau
             origin[ev] = {"window": al.window_file, "queue_id": al.queue_id, "rank": "top" if ev in top else "sample",
                           "n_anomalous_in_window": len(evs), "gt_window": al.is_gt_attack_window}
+    if a.subsample and len(targets) > a.subsample:   # seeded sample across all alerted windows (E6 subsets)
+        targets = sorted(np.random.default_rng(0).choice(targets, size=a.subsample, replace=False).tolist())
     if a.max_events:
         targets = targets[:a.max_events]
     if a.shard:
@@ -190,10 +195,19 @@ def cmd_explain(a):
                "n_items": em.num_items,
                "n_edge_items": int(em.is_edge_item.sum()), "n_history_items": int(em.is_history_item.sum()),
                "gt_endpoint": (gt is not None) and bool(exclude & gt), "explanations": []}
+        with torch.no_grad():
+            t_f = time.perf_counter()
+            em.loss(torch.ones(em.num_items, dtype=em.dtype, device=em.device), hard=True)
+            rec["forward_ms"] = 1000 * (time.perf_counter() - t_f)
+        hc = cap.hist
+        log(f"ev {ev}: class {rec['alert_class']}, items {em.num_items} (edges {rec['n_edge_items']}, history "
+            f"{rec['n_history_items']}), closure {len(hc.R) if hc is not None else 0} nodes "
+            f"(exact {getattr(hc, 'exact_scope', None)}), one forward {rec['forward_ms']:.0f} ms")
         for seed in [int(s) for s in a.seeds.split(",")]:
             set_seed(seed)
             for ex in _run_methods(em, cap.tau, data, methods, seed, graphmask):
-                mets = _metrics_for(em, ex, cap.tau, data, gt, exclude)
+                t_m = time.perf_counter()
+                mets = _metrics_for(em, ex, cap.tau, data, gt, exclude, window=rec["alert_class"] == "window")
                 if a.calibration and ex.method == "variational" and rec["alert_class"] == "window":
                     from .evaluate.calibration import posterior_calibration
                     mets["calibration"] = posterior_calibration(em, ex, cap.tau, n=a.calibration_n)
@@ -202,7 +216,9 @@ def cmd_explain(a):
                     metrics=mets, seed=seed)
                 if a.full_scores:
                     er["items_all"], er["scores_all"] = ex.items, ex.scores
+                er["metrics_s"] = time.perf_counter() - t_m
                 rec["explanations"].append(er)
+                log(f"  {ex.method}/{ex.mode}: explain {ex.runtime_s:.1f}s, metrics {er['metrics_s']:.1f}s")
         fout.write(json.dumps(rec) + "\n"); fout.flush()
         log(f"[{i + 1}/{len(targets)}] ev {ev} L={cap.loss_batch:.2f} tau={cap.tau:.2f} items={em.num_items} "
             f"peak RSS {peak_rss_mb():.0f} MB" + (f", GPU peak {torch.cuda.max_memory_allocated() / 2**20:.0f} MB"
@@ -274,11 +290,13 @@ def cmd_graphmask_fit(a):
     memory, gnn, lp, hp = load_checkpoint(a.ckpt, "cpu")
     data = load_day(a.day_file)
     losses, windows = KairosReplayer(memory, gnn, lp, hp).pass1(data)
-    targets = []
+    cands = []
     for w in windows:
         tau = A.window_threshold(losses, w)
-        targets += A.anomalous_events(losses, w, tau)[:a.per_window]
-    targets = targets[:a.max_events]
+        cands += A.anomalous_events(losses, w, tau)[:a.per_window]
+    # sample across the whole day: the first max_events candidates all come from the early windows
+    rng = np.random.default_rng(a.seed)
+    targets = sorted(rng.choice(cands, size=min(a.max_events, len(cands)), replace=False).tolist()) if cands else []
     caps = KairosReplayer(memory, gnn, lp, hp).pass2(data, targets, history_batches=0)
     memory, gnn, lp = memory.to(dev), gnn.to(dev), lp.to(dev)
     models = [EventModel(memory, gnn, lp, caps[e], use_history=False, device=dev) for e in targets]
@@ -286,7 +304,9 @@ def cmd_graphmask_fit(a):
     hist = gm.fit(models, epochs=a.epochs, seed=a.seed, log=lambda r: log(json.dumps(r)))
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(gm.state_dict(), a.out)
-    Path(str(a.out) + ".json").write_text(json.dumps({"history": hist, "n_events": len(models), "day": a.day}))
+    Path(str(a.out) + ".json").write_text(json.dumps({"history": hist, "final": hist[-1] if hist else {},
+                                                      "n_events": len(models), "n_candidates": len(cands),
+                                                      "day": a.day}))
 
 
 def main(argv=None):
@@ -308,12 +328,13 @@ def main(argv=None):
     s.add_argument("--max-events", type=int, default=0); s.add_argument("--history-batches", type=int, default=64)
     s.add_argument("--full-scores", action="store_true"); s.add_argument("--calibration", action="store_true")
     s.add_argument("--calibration-n", type=int, default=10); s.add_argument("--shard", default="", help="i/n")
+    s.add_argument("--subsample", type=int, default=0, help="seeded random subset of the targets (0 = all)")
     s.add_argument("--only-class", default="", help="restrict to alert class (e.g. window), for E6 subsets")
     s.set_defaults(fn=cmd_explain)
     s = sub.add_parser("graphmask-fit")
     for k in ("--ckpt", "--day-file", "--day", "--out"):
         s.add_argument(k, required=True)
-    s.add_argument("--device", default="cpu"); s.add_argument("--epochs", type=int, default=20)
+    s.add_argument("--device", default="cpu"); s.add_argument("--epochs", type=int, default=40)
     s.add_argument("--per-window", type=int, default=20); s.add_argument("--max-events", type=int, default=400)
     s.add_argument("--seed", type=int, default=0); s.set_defaults(fn=cmd_graphmask_fit)
     s = sub.add_parser("local-vs-full")
