@@ -50,12 +50,16 @@ class AnomalyGNNExplainer(GNNExplainer):
 def _run(em: EventModel, algorithm, tau: float, name: str, seed: int) -> Explanation:
     t0 = time.perf_counter()
     torch.manual_seed(seed)
-    model = _EdgeChannelModel(em)
+    # eval() matters: PyG's Explainer restores the wrapper's training flag when it returns, and a new
+    # module starts in training mode, which would switch on KAIROS's link-predictor dropout for every
+    # later forward pass.
+    model = _EdgeChannelModel(em).eval()
     explainer = Explainer(model=model, algorithm=algorithm, explanation_type="phenomenon",
                           edge_mask_type="object", node_mask_type=None,
                           model_config=ModelConfig(mode="multiclass_classification",
                                                    task_level="edge", return_type="raw"))
     expl = explainer(em.x, em.ei, target=em.y, msg=em.edge_msg, t_off=em.edge_t_off)
+    em.gnn.eval(); em.link_pred.eval()
     edge_mask = expl.edge_mask.detach().to(torch.float64)
     scores = torch.full((em.num_items,), -1.0, dtype=torch.float64, device=em.device)
     scores.scatter_reduce_(0, em.edge_item, edge_mask, reduce="amax", include_self=True)

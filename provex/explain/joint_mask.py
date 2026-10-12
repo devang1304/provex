@@ -113,7 +113,10 @@ class JointMaskExplainer:
                 lam = max(0.0, lam + self.dual_lr * v)
         with torch.no_grad():
             gate = self._gates_for(hard_concrete_mean(log_alpha), em)
-            imp = gate if self.mode == "preserve" else 1 - gate
+            # Rank by the unclamped keep probability. The clamped gate saturates at exactly 0 or 1, and the
+            # resulting ties would leave the top-k order (and greedy repair) to the item index.
+            p_keep = self._gates_for(torch.sigmoid(log_alpha), em)
+            imp = p_keep if self.mode == "preserve" else 1 - p_keep
             imp = torch.where(active, imp, torch.full_like(imp, -1.0))
             keep = gate > 0.5
             valid, L_sel, repaired, keep = self._check_and_repair(em, keep, imp, tau, active)

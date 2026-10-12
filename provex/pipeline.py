@@ -217,6 +217,11 @@ def cmd_explain(a):
                "n_items": em.num_items,
                "n_edge_items": int(em.is_edge_item.sum()), "n_history_items": int(em.is_history_item.sum()),
                "gt_endpoint": (gt is not None) and bool(exclude & gt), "explanations": []}
+        # the recomputed full score must be the detector's; anything else means the capture or the
+        # model state is wrong, and every metric of this event would be meaningless
+        rec["full_minus_detector"] = ch["full"] - cap.loss_batch
+        if abs(rec["full_minus_detector"]) > 1e-3:
+            log(f"WARNING ev {ev}: recomputed score {ch['full']:.4f} differs from the detector's {cap.loss_batch:.4f}")
         with torch.no_grad():
             t_f = time.perf_counter()
             em.loss(torch.ones(em.num_items, dtype=em.dtype, device=em.device), hard=True)
@@ -228,6 +233,9 @@ def cmd_explain(a):
         for seed in [int(s) for s in a.seeds.split(",")]:
             set_seed(seed)
             for ex in _run_methods(em, cap.tau, data, methods, seed, graphmask, B=BUDGETS[a.budget]):
+                if memory.training or gnn.training or lp.training:   # dropout would make every later score random
+                    log(f"WARNING: {ex.method} left the model in training mode; restoring eval mode")
+                    memory.eval(); gnn.eval(); lp.eval()
                 t_m = time.perf_counter()
                 mets = _metrics_for(em, ex, cap.tau, data, gt, exclude, window=rec["alert_class"] == "window",
                                     B=BUDGETS[a.budget])

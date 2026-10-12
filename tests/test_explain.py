@@ -165,3 +165,15 @@ def test_bounded_occlusion_and_grid_min_cf(tiny):
         order = metrics._order(ex.scores)
         g = torch.ones(em.num_items, dtype=em.dtype); g[order[:k]] = 0
         assert float(em.loss(g, hard=True)) < tau
+
+
+def test_explainers_leave_model_in_eval_mode(tiny):
+    """PyG's Explainer restores its wrapper's training flag on exit, and a new wrapper starts in training
+    mode. That once switched on KAIROS's link-predictor dropout for every later score (step-5 comparison)."""
+    em, tau, data = _top_event(tiny)
+    ones = torch.ones(em.num_items, dtype=em.dtype)
+    L0 = float(em.loss(ones, hard=True))
+    for fn in (anomaly_gnnexplainer, v1_gnnexplainer):
+        fn(em, tau, epochs=5)
+        assert not em.gnn.training and not em.link_pred.training, fn.__name__
+        assert float(em.loss(ones, hard=True)) == L0, fn.__name__
