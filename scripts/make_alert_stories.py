@@ -18,8 +18,9 @@ Tier 1 (triage):
 - Two orders are kept:
   - by score: KAIROS's own ranking;
   - by triage: a fixed, analyst-style order (new external IP addresses first, then newly
-    created programs executing or new processes, then score). The triage order was set before
-    looking at any ground truth and is never tuned on it.
+    created programs executing or new processes, then score). The triage order is fixed, not
+    learned. It was chosen after reading the 04-06 score-order story, where benign DNS and php-fpm
+    actions ranked above the attacker's C2, and was not changed for 04-12 (the cleaner test).
 - Network novelty is judged per IP address. KAIROS keys sockets by IP:port, so every
   ephemeral port would otherwise look new.
 
@@ -187,14 +188,33 @@ def main():
                 x["external_ip_new_today"] = peer_ip is not None and ip_first_day.get(peer_ip) == day
                 x["new_program_runs"] = (x["type"] == "EVENT_EXECUTE" and (x["src_new_today"] or x["dst_new_today"])) \
                     or (kind(x["src"]) == "subject" and x["src_new_today"]) or (kind(x["dst"]) == "subject" and x["dst_new_today"])
-                x["first"], x["last"] = hhmmss(x["first_ns"]), hhmmss(x["last_ns"])
                 x["tau"] = tau
+            # KAIROS keeps one socket node per local and remote endpoint but labels it by the remote
+            # address only, so several nodes share a label. Merge actions an analyst cannot tell apart.
+            merged = {}
+            for x in ranked:
+                k3 = (x["src_label"], x["type"], x["dst_label"])
+                y = merged.get(k3)
+                if y is None:
+                    merged[k3] = dict(x, n_nodes_merged=1)
+                    continue
+                y["n_nodes_merged"] += 1
+                y["count"] += x["count"]
+                y["first_ns"] = min(y["first_ns"], x["first_ns"]); y["last_ns"] = max(y["last_ns"], x["last_ns"])
+                if x["max_score"] > y["max_score"]:
+                    y["max_score"], y["example_event"] = x["max_score"], x["example_event"]
+                for flag in ("rare", "src_new_today", "dst_new_today", "src_unseen_in_training",
+                             "dst_unseen_in_training", "external_ip_new_today", "new_program_runs"):
+                    y[flag] = y[flag] or x[flag]
+            ranked = sorted(merged.values(), key=lambda x: (-x["max_score"], -x["count"]))
+            for x in ranked:
+                x["first"], x["last"] = hhmmss(x["first_ns"]), hhmmss(x["last_ns"])
             ranked_triage = sorted(ranked, key=triage_key)
             top = ranked_triage[:a.k]
             top_by_score = ranked[:a.k]
             covered = sum(x["count"] for x in top)
             for x in ranked:
-                k2 = (x["src"], x["type"], x["dst"])
+                k2 = (x["src_label"], x["type"], x["dst_label"])
                 if k2 not in alert_actions or x["max_score"] > alert_actions[k2]["max_score"]:
                     alert_actions[k2] = dict(x, window=al["window_file"])
             tier2 = []
@@ -210,7 +230,7 @@ def main():
                               "narrative": [{"t": hhmmss(it["t"]), "src": it["src_label"], "type": it["type"],
                                              "dst": it["dst_label"], "score": it["score"]} for it in items]})
             windows.append({"window": al["window_file"], "start": hhmmss(w.start_t), "end": hhmmss(w.end_t),
-                            "tau": tau, "n_flagged": int(len(idx)), "n_actions": len(acts),
+                            "tau": tau, "n_flagged": int(len(idx)), "n_actions": len(ranked),
                             "n_rare_events": int(n_rare), "n_context_events": int(len(idx) - n_rare),
                             "tier1": top, "tier1_by_score": top_by_score, "tier2": tier2,
                             "tier3": {"rare_share": n_rare / len(idx) if len(idx) else None,

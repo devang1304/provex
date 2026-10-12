@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PROVEX v2 experiments (runs on a GCP VM from /data/provex with .venv active).
 #   bash scripts/run_experiments.sh <stage> [args]
-# stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY [WORKERS] | e7 DAY | tables | push
+# stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY [WORKERS] | e7 DAY | xai | tables | push
 # explain env: METHODS, TOP_N, SAMPLE_N, MAX_EVENTS (0 = all), EXPL_OUT (default results/expl/seed_$SEED),
 #   BUDGET (full|bounded), HIST_BATCHES (64; 0 = neighbour edges only), SUBSAMPLE (0 = all), ONLY_CLASS,
 #   EVENTS ('1,2,3' or '@file'). e6 also reads BUDGET, HIST_BATCHES, EVENTS (set E6_EVENTS=0 with EVENTS).
@@ -71,6 +71,19 @@ case "$stage" in
           python -m provex.pipeline local-vs-full --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple \
             --explanations $R/expl_${d}_all.jsonl --out ${E7_OUT:-$R/local_vs_full.json} --max-alerts ${E7_ALERTS:-30} \
             --workers ${E7_WORKERS:-$(nproc)} --history-batches ${HIST_BATCHES:-64} ;;
+  xai)    # XAI-in-SOC analyses from existing outputs (minutes on CPU): stories, H1-H5, paper numbers
+          python scripts/make_alert_stories.py --graphs $G --names $NAMES --kairos $K --pass1 $R/pass1 \
+            --records "$R/stage1/expl/explanations_*.jsonl" --explanations "$R/compare/*/explanations_*.jsonl" --out $R/stories
+          python scripts/evaluate_stories.py --stories $R/stories/stories.json \
+            --summary $R/investigation/kairos_summary_graphs.json --steps ground_truth/cadets_e3/darpa/steps.json \
+            --iocs ground_truth/cadets_e3/darpa/iocs.json --windows $R/analysis/alert_windows.json --out $R/analysis
+          python scripts/analyze_novelty_control.py --graphs $G --names $NAMES --kairos $K --pass1 $R/pass1 --out $R/analysis
+          python scripts/aggregate_e6.py --records "$R/e6/*.jsonl" --out $R
+          python scripts/analyze_techniques.py --a "$R/compare/A/explanations_*.jsonl" \
+            --b "$R/compare/B/explanations_*.jsonl" --e7 "$R/compare/local_vs_full_*.json" --results $R \
+            --out $R/analysis --tex paper/generated
+          python scripts/make_xai_numbers.py --analysis $R/analysis --out paper/generated
+          python scripts/make_story_tex.py --stories $R/stories/stories.json --out paper/generated ;;
   tables) python scripts/aggregate_e6.py --records "$R/e6/*.jsonl" --out $R || true
           mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated
           python scripts/make_case_studies.py --results $R --gt-dir $GT --out paper/generated ;;

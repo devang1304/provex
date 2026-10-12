@@ -62,9 +62,9 @@ def load_jsonl(path):
 
 def table(caption, label, header, rows, align):
     out = ["\\begin{table}[t]", "\\centering", "\\scriptsize", f"\\caption{{{caption}}}", f"\\label{{{label}}}",
-           f"\\begin{{tabular}}{{{align}}}", "\\toprule", " & ".join(header) + " \\\\", "\\midrule"]
+           f"\\fittable{{\\begin{{tabular}}{{{align}}}", "\\toprule", " & ".join(header) + " \\\\", "\\midrule"]
     out += [" & ".join(r) + " \\\\" for r in rows]
-    out += ["\\bottomrule", "\\end{tabular}", "\\end{table}", ""]
+    out += ["\\bottomrule", "\\end{tabular}}", "\\end{table}", ""]
     return "\n".join(out)
 
 
