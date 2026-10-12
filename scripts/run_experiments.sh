@@ -2,7 +2,9 @@
 # PROVEX v2 experiments (runs on a GCP VM from /data/provex with .venv active).
 #   bash scripts/run_experiments.sh <stage> [args]
 # stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY [WORKERS] | e7 DAY | tables | push
-# explain env: METHODS, TOP_N, SAMPLE_N, MAX_EVENTS (0 = all), EXPL_OUT (default results/expl/seed_$SEED)
+# explain env: METHODS, TOP_N, SAMPLE_N, MAX_EVENTS (0 = all), EXPL_OUT (default results/expl/seed_$SEED),
+#   BUDGET (full|bounded), HIST_BATCHES (64; 0 = neighbour edges only), SUBSAMPLE (0 = all), ONLY_CLASS,
+#   EVENTS ('1,2,3' or '@file')
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi   # VM venv; Docker uses system python
@@ -43,6 +45,8 @@ case "$stage" in
               --graphmask $R/graphmask/graphmask_seed$SEED.pt \
               --methods ${METHODS:-joint,joint-cf,joint-edges,variational,graphmask,gnnx-anomaly,gnnx-v1,mcts,baselines} \
               --top-n ${TOP_N:-25} --sample-n ${SAMPLE_N:-25} --max-events ${MAX_EVENTS:-0} --shard $i/$W \
+              --budget ${BUDGET:-full} --history-batches ${HIST_BATCHES:-64} --subsample ${SUBSAMPLE:-0} \
+              ${ONLY_CLASS:+--only-class $ONLY_CLASS} ${EVENTS:+--events $EVENTS} \
               --out $O > $O/explain_${d}_shard$i.log 2>&1 &
             pids+=($!)
           done

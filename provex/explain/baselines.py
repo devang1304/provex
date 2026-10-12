@@ -5,7 +5,7 @@ All return importance scores aligned with ``em.items`` (higher = more important 
 from __future__ import annotations
 
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 from torch import Tensor
@@ -53,17 +53,27 @@ def integrated_gradients(em: EventModel, tau: float, steps: int = 20) -> Explana
     return _wrap("integrated_gradients", em, (total / steps).to(torch.float64), tau, t0)
 
 
-@torch.no_grad()
-def occlusion(em: EventModel, tau: float, max_items: int = 4096) -> Explanation:
-    """Leave-one-out: L(all) - L(all but item k), by exact hard deletion."""
+def occlusion(em: EventModel, tau: float, max_items: int = 4096, top_m: Optional[int] = None) -> Explanation:
+    """Leave-one-out: L(all) - L(all but item k), by exact hard deletion.
+
+    With ``top_m``, only the ``top_m`` items with the largest gradient dL/dg are occluded (the rest are
+    left unscored), which bounds the cost on events with tens of thousands of history items."""
     t0 = time.perf_counter()
-    ones = torch.ones(em.num_items, dtype=em.dtype, device=em.device)
-    L_full = float(em.loss(ones, hard=True))
-    scores = torch.full((em.num_items,), float("nan"), dtype=torch.float64)
-    for k in range(min(em.num_items, max_items)):
-        g = ones.clone(); g[k] = 0
-        scores[k] = L_full - float(em.loss(g, hard=True))
-    return _wrap("occlusion", em, scores, tau, t0, truncated=em.num_items > max_items)
+    n = em.num_items
+    ones = torch.ones(n, dtype=em.dtype, device=em.device)
+    if top_m is not None and n > top_m:
+        g = ones.clone().requires_grad_(True)
+        em.loss(g).backward()
+        cand = torch.argsort(g.grad.detach(), descending=True)[:top_m].tolist()
+    else:
+        cand = list(range(min(n, max_items)))
+    with torch.no_grad():
+        L_full = float(em.loss(ones, hard=True))
+        scores = torch.full((n,), float("nan"), dtype=torch.float64)
+        for k in cand:
+            g = ones.clone(); g[k] = 0
+            scores[k] = L_full - float(em.loss(g, hard=True))
+    return _wrap("occlusion", em, scores, tau, t0, truncated=len(cand) < n, candidates=len(cand))
 
 
 @torch.no_grad()

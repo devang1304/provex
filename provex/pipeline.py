@@ -92,12 +92,23 @@ def cmd_parity(a):
 
 
 # ---------------------------------------------------------------------------- explain
-def _metrics_for(em, ex, tau, data, gt, exclude, window=True):
+# Per-method budgets. "bounded" keeps events with tens of thousands of history items affordable;
+# the budget used is recorded in every explanation record.
+BUDGETS = {
+    "full": {"joint_epochs": 300, "joint_repair": 512, "var_epochs": 300, "var_samples": 8, "var_mc": 256,
+             "gnnx_epochs": 200, "occlusion_top": None, "ig_steps": 20, "mincf_kmax": 256, "mincf_grid": None},
+    "bounded": {"joint_epochs": 150, "joint_repair": 64, "var_epochs": 150, "var_samples": 4, "var_mc": 128,
+                "gnnx_epochs": 100, "occlusion_top": 200, "ig_steps": 10, "mincf_kmax": 64,
+                "mincf_grid": [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64]},
+}
+
+
+def _metrics_for(em, ex, tau, data, gt, exclude, window=True, B=BUDGETS["full"]):
     out = {"deletion": M.deletion_curve(em, ex.scores, KS), "insertion": M.insertion_curve(em, ex.scores, KS)}
     out["flip_at_k"] = {k: M.alert_flip(v, tau) for k, v in out["deletion"].items()}
     out["keep_at_k"] = {k: M.alert_keep(v, tau) for k, v in out["insertion"].items()}
     if window:   # a linear prefix scan; elsewhere removing every item does not flip, so it rarely ends early
-        out["min_cf_size"] = M.min_cf_size(em, ex.scores, tau)
+        out["min_cf_size"] = M.min_cf_size(em, ex.scores, tau, k_max=B["mincf_kmax"], grid=B["mincf_grid"])
     if gt is not None:
         ent = M.entity_scores(ex.items, ex.scores, data, exclude)
         out["gt"] = {f"p@{k}": M.precision_at_k(ent, gt, k) for k in (1, 3, 5, 10)}
@@ -105,22 +116,25 @@ def _metrics_for(em, ex, tau, data, gt, exclude, window=True):
     return out
 
 
-def _run_methods(em, tau, data, methods, seed, graphmask):
+def _run_methods(em, tau, data, methods, seed, graphmask, B=BUDGETS["full"]):
     """Yields each explanation as soon as it is computed (so the caller can log per-method timing)."""
     if "joint" in methods:
-        yield (JointMaskExplainer("preserve", seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("preserve", seed=seed, epochs=B["joint_epochs"], max_repair=B["joint_repair"]).explain(em, tau))
     if "joint-cf" in methods:
-        yield (JointMaskExplainer("counterfactual", seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("counterfactual", seed=seed, epochs=B["joint_epochs"],
+                                  max_repair=B["joint_repair"]).explain(em, tau))
     if "joint-edges" in methods:
-        yield (JointMaskExplainer("preserve", history=False, seed=seed).explain(em, tau))
+        yield (JointMaskExplainer("preserve", history=False, seed=seed, epochs=B["joint_epochs"],
+                                  max_repair=B["joint_repair"]).explain(em, tau))
     if "variational" in methods:
-        yield (VariationalTemporalExplainer(seed=seed).explain(em, tau, data.t))
+        yield (VariationalTemporalExplainer(seed=seed, epochs=B["var_epochs"], samples=B["var_samples"],
+                                            mc_export=B["var_mc"]).explain(em, tau, data.t))
     if "graphmask" in methods and graphmask is not None:
         yield (graphmask.explain(em, tau))
     if "gnnx-anomaly" in methods:
-        yield (anomaly_gnnexplainer(em, tau, seed=seed))
+        yield (anomaly_gnnexplainer(em, tau, epochs=B["gnnx_epochs"], seed=seed))
     if "gnnx-v1" in methods:
-        yield (v1_gnnexplainer(em, tau, seed=seed))
+        yield (v1_gnnexplainer(em, tau, epochs=B["gnnx_epochs"], seed=seed))
     if "mcts" in methods:
         from .explain.mcts import mcts_explain
         yield (mcts_explain(em, tau))
@@ -130,6 +144,10 @@ def _run_methods(em, tau, data, methods, seed, graphmask):
                 yield (fn(em, tau, data.t))
             elif name == "random":
                 yield (fn(em, tau, seed=seed))
+            elif name == "occlusion":
+                yield (fn(em, tau, top_m=B["occlusion_top"]))
+            elif name == "integrated_gradients":
+                yield (fn(em, tau, steps=B["ig_steps"]))
             else:
                 yield (fn(em, tau))
 
@@ -161,6 +179,10 @@ def cmd_explain(a):
             targets.append(ev); tau_of[ev] = tau
             origin[ev] = {"window": al.window_file, "queue_id": al.queue_id, "rank": "top" if ev in top else "sample",
                           "n_anomalous_in_window": len(evs), "gt_window": al.is_gt_attack_window}
+    if a.events:                                      # explicit event ids: "1,2,3" or "@file" (one id per line)
+        spec = Path(a.events[1:]).read_text().split() if a.events.startswith("@") else a.events.split(",")
+        keep = {int(x) for x in spec if x.strip()}
+        targets = [e for e in targets if e in keep]
     if a.subsample and len(targets) > a.subsample:   # seeded sample across all alerted windows (E6 subsets)
         targets = sorted(np.random.default_rng(0).choice(targets, size=a.subsample, replace=False).tolist())
     if a.max_events:
@@ -205,9 +227,10 @@ def cmd_explain(a):
             f"(exact {getattr(hc, 'exact_scope', None)}), one forward {rec['forward_ms']:.0f} ms")
         for seed in [int(s) for s in a.seeds.split(",")]:
             set_seed(seed)
-            for ex in _run_methods(em, cap.tau, data, methods, seed, graphmask):
+            for ex in _run_methods(em, cap.tau, data, methods, seed, graphmask, B=BUDGETS[a.budget]):
                 t_m = time.perf_counter()
-                mets = _metrics_for(em, ex, cap.tau, data, gt, exclude, window=rec["alert_class"] == "window")
+                mets = _metrics_for(em, ex, cap.tau, data, gt, exclude, window=rec["alert_class"] == "window",
+                                    B=BUDGETS[a.budget])
                 if a.calibration and ex.method == "variational" and rec["alert_class"] == "window":
                     from .evaluate.calibration import posterior_calibration
                     mets["calibration"] = posterior_calibration(em, ex, cap.tau, n=a.calibration_n)
@@ -217,6 +240,7 @@ def cmd_explain(a):
                 if a.full_scores:
                     er["items_all"], er["scores_all"] = ex.items, ex.scores
                 er["metrics_s"] = time.perf_counter() - t_m
+                er["budget"] = a.budget
                 rec["explanations"].append(er)
                 log(f"  {ex.method}/{ex.mode}: explain {ex.runtime_s:.1f}s, metrics {er['metrics_s']:.1f}s")
         fout.write(json.dumps(rec) + "\n"); fout.flush()
@@ -329,6 +353,8 @@ def main(argv=None):
     s.add_argument("--full-scores", action="store_true"); s.add_argument("--calibration", action="store_true")
     s.add_argument("--calibration-n", type=int, default=10); s.add_argument("--shard", default="", help="i/n")
     s.add_argument("--subsample", type=int, default=0, help="seeded random subset of the targets (0 = all)")
+    s.add_argument("--budget", default="full", choices=sorted(BUDGETS), help="per-method compute budget")
+    s.add_argument("--events", default="", help="only these alert events: '1,2,3' or '@file' with one id per line")
     s.add_argument("--only-class", default="", help="restrict to alert class (e.g. window), for E6 subsets")
     s.set_defaults(fn=cmd_explain)
     s = sub.add_parser("graphmask-fit")

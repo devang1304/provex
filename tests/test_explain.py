@@ -153,3 +153,15 @@ def test_load_gt_nodes_formats(tmp_path):
         {"attack": "Nginx_Backdoor_06", "nodes": {"5": {"name": "file: /tmp/x"}}, "rows": [], "stats": {}}))
     (tmp_path / "kairos_nodes_Nginx_Backdoor_12.json").write_text(_json.dumps({"9": "subject: nginx"}))
     assert load_gt_nodes(tmp_path) == {"4_6": {5}, "4_12": {9}}
+
+def test_bounded_occlusion_and_grid_min_cf(tiny):
+    em, tau, _ = _top_event(tiny)
+    ex = baselines.occlusion(em, tau, top_m=3)
+    scored = [s for s in ex.scores if not math.isnan(s)]
+    assert len(scored) == min(3, em.num_items) and ex.extra["candidates"] == len(scored)
+    k = metrics.min_cf_size(em, ex.scores, tau, k_max=8, grid=[1, 2, 4, 8])
+    assert k is None or k in (1, 2, 4, 8)
+    if k is not None:                                                  # the reported prefix really flips
+        order = metrics._order(ex.scores)
+        g = torch.ones(em.num_items, dtype=em.dtype); g[order[:k]] = 0
+        assert float(em.loss(g, hard=True)) < tau

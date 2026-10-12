@@ -1,0 +1,47 @@
+{
+  "source": "DARPA TC Engagement 3 ground-truth report (TC_Ground_Truth_Report_E3_Update.pdf), CADETS sections 3.1, 3.8, 3.13, 3.14; see iocs.json and SOURCE.md",
+  "note": "Each step is what the attacker did, written as entity patterns that can appear in KAIROS's view of the data. A step counts as recovered when an explanation item touches any of its patterns during the attack (interval from iocs.json plus slack). Pattern kinds: netflow (ip, optional port), file (exact path), subject (process name). 'observable' marks steps whose syscall trace may be missing or ambiguous (in-memory injection; host crash).",
+  "slack_minutes": 15,
+  "attacks": {
+    "Nginx_Backdoor_06": [
+      {"step": "exploit", "what": "malformed HTTP POST from the attacker to nginx", "patterns": [{"kind": "netflow", "ip": "81.49.200.166"}]},
+      {"step": "stage", "what": "nginx fetches shellcode and the Drakon loader", "patterns": [{"kind": "netflow", "ip": "78.205.235.65"}, {"kind": "netflow", "ip": "200.36.109.214"}]},
+      {"step": "payload", "what": "implant written to /tmp/vUgefal", "patterns": [{"kind": "file", "path": "/tmp/vUgefal"}]},
+      {"step": "elevate_c2", "what": "vUgefal runs as root and calls its C2", "patterns": [{"kind": "subject", "name": "vUgefal"}, {"kind": "netflow", "ip": "139.123.0.113"}]},
+      {"step": "recon", "what": "netrecon to two hosts", "patterns": [{"kind": "netflow", "ip": "154.145.113.18"}, {"kind": "netflow", "ip": "61.167.39.128"}]},
+      {"step": "lateral_payload", "what": "libdrakon fetched and written to /var/log/devc", "patterns": [{"kind": "netflow", "ip": "152.111.159.139"}, {"kind": "file", "path": "/var/log/devc"}]},
+      {"step": "injection", "what": "injection into sshd fails; kernel panic", "patterns": [{"kind": "subject", "name": "sshd"}], "observable": "uncertain"}
+    ],
+    "Nginx_Backdoor_11": [
+      {"step": "exploit", "what": "malformed HTTP request from the attacker to nginx", "patterns": [{"kind": "netflow", "ip": "25.159.96.207"}]},
+      {"step": "stage", "what": "nginx fetches shellcode and the Drakon loader", "patterns": [{"kind": "netflow", "ip": "76.56.184.25"}, {"kind": "netflow", "ip": "155.162.39.48"}]},
+      {"step": "lateral_payload", "what": "libdrakon written as grain (a first attempt as sendmail failed)", "patterns": [{"kind": "file", "path": "/tmp/grain"}, {"kind": "netflow", "ip": "198.115.236.119"}]},
+      {"step": "injection", "what": "injection of /tmp/grain into PID 802 fails; host crashes", "patterns": [{"kind": "file", "path": "/tmp/grain"}], "observable": "uncertain"}
+    ],
+    "Nginx_Backdoor_12": [
+      {"step": "exploit", "what": "malformed HTTP request from the attacker to nginx", "patterns": [{"kind": "netflow", "ip": "25.159.96.207"}]},
+      {"step": "stage", "what": "nginx fetches shellcode and the Drakon loader", "patterns": [{"kind": "netflow", "ip": "76.56.184.25"}, {"kind": "netflow", "ip": "155.162.39.48"}]},
+      {"step": "payload_attempts", "what": "micro APT dropped as tmux-1002, minions and font; elevation fails", "patterns": [{"kind": "file", "path": "/tmp/tmux-1002"}, {"kind": "file", "path": "/tmp/minions"}, {"kind": "file", "path": "/tmp/font"}, {"kind": "netflow", "ip": "98.15.44.232"}]},
+      {"step": "payload", "what": "Drakon executable XIM dropped and elevated to root", "patterns": [{"kind": "file", "path": "/tmp/XIM"}, {"kind": "subject", "name": "XIM"}]},
+      {"step": "c2", "what": "XIM calls its C2", "patterns": [{"kind": "netflow", "ip": "53.158.101.118"}]},
+      {"step": "second_implant", "what": "micro APT run unprivileged as sendmail, main and test; C2 to 192.113.144.28", "patterns": [{"kind": "file", "path": "/var/log/sendmail"}, {"kind": "file", "path": "/var/log/netlog"}, {"kind": "file", "path": "/tmp/main"}, {"kind": "file", "path": "/tmp/test"}, {"kind": "subject", "name": "main"}, {"kind": "subject", "name": "test"}, {"kind": "netflow", "ip": "192.113.144.28"}]},
+      {"step": "recon", "what": "port scans of eight internal hosts on ports 22 and 6000", "patterns": [
+        {"kind": "netflow", "ip": "128.55.12.166", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.166", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.67", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.67", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.141", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.141", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.110", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.110", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.118", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.118", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.10", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.10", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.1", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.1", "port": "6000"},
+        {"kind": "netflow", "ip": "128.55.12.55", "port": "22"}, {"kind": "netflow", "ip": "128.55.12.55", "port": "6000"}]}
+    ],
+    "Nginx_Backdoor_13": [
+      {"step": "reconnect", "what": "attacker reconnects to the C2 session left open on 04-12", "patterns": [{"kind": "subject", "name": "XIM"}, {"kind": "netflow", "ip": "53.158.101.118"}]},
+      {"step": "exploit", "what": "malformed HTTP request to nginx", "patterns": [{"kind": "netflow", "ip": "25.159.96.207"}, {"kind": "netflow", "ip": "128.55.12.73"}]},
+      {"step": "stage", "what": "nginx fetches shellcode and the Drakon loader", "patterns": [{"kind": "netflow", "ip": "76.56.184.25"}, {"kind": "netflow", "ip": "155.162.39.48"}, {"kind": "netflow", "ip": "78.205.235.65"}]},
+      {"step": "payload", "what": "Drakon executable pEja72mA and library eWq10bVcx written", "patterns": [{"kind": "file", "path": "/tmp/pEja72mA"}, {"kind": "file", "path": "/tmp/eWq10bVcx"}]},
+      {"step": "elevate_c2", "what": "pEja72mA runs as root and calls its C2", "patterns": [{"kind": "subject", "name": "pEja72mA"}]},
+      {"step": "injection", "what": "three failed injections of library copies into sshd", "patterns": [{"kind": "file", "path": "/tmp/memhelp.so"}, {"kind": "file", "path": "/tmp/eraseme"}, {"kind": "file", "path": "/tmp/done.so"}, {"kind": "netflow", "ip": "198.115.236.119"}], "observable": "uncertain"}
+    ]
+  }
+}

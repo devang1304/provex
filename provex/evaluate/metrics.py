@@ -98,12 +98,17 @@ def alert_keep(L_kept_only: float, tau: float) -> bool:
 
 
 @torch.no_grad()
-def min_cf_size(em: EventModel, scores, tau: float, k_max: int = 256) -> Optional[int]:
-    """Smallest k such that removing the top-k items drops L below tau (None if > k_max)."""
+def min_cf_size(em: EventModel, scores, tau: float, k_max: int = 256, grid=None) -> Optional[int]:
+    """Smallest k such that removing the top-k items drops L below tau (None if > k_max).
+
+    With ``grid``, only those k are tried: the result is the smallest flipping k on the grid, an upper
+    bound on the true minimum (L is not monotone in k, so a skipped k could also flip)."""
     order = _order(scores)
-    g = torch.ones(em.num_items, dtype=em.dtype, device=em.device)
-    for k in range(1, min(k_max, em.num_items) + 1):
-        g[order[k - 1]] = 0
+    ones = torch.ones(em.num_items, dtype=em.dtype, device=em.device)
+    for k in (grid or range(1, k_max + 1)):
+        if k > min(k_max, em.num_items):
+            break
+        g = ones.clone(); g[order[:k]] = 0
         if float(em.loss(g, hard=True)) < tau:
             return k
     return None
