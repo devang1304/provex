@@ -4,7 +4,8 @@
 # stages: pull | detect | parity | gmfit | explain DAY [WORKERS] | e6 DAY [WORKERS] | e7 DAY | tables | push
 # explain env: METHODS, TOP_N, SAMPLE_N, MAX_EVENTS (0 = all), EXPL_OUT (default results/expl/seed_$SEED),
 #   BUDGET (full|bounded), HIST_BATCHES (64; 0 = neighbour edges only), SUBSAMPLE (0 = all), ONLY_CLASS,
-#   EVENTS ('1,2,3' or '@file')
+#   EVENTS ('1,2,3' or '@file'). e6 also reads BUDGET, HIST_BATCHES, EVENTS (set E6_EVENTS=0 with EVENTS).
+# e7 env: E7_EXPL_DIR (explanations with history), E7_OUT, E7_ALERTS, E7_WORKERS, HIST_BATCHES (match the explain run)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi   # VM venv; Docker uses system python
@@ -59,15 +60,17 @@ case "$stage" in
               --alerts $K/alerts.json --names $NAMES --gt-dir $GT --pass1 $R/pass1/pass1_$d.pt \
               --methods joint,joint-cf,variational,gnnx-anomaly \
               --seeds 0,1,2,3,4 --full-scores --calibration --only-class window --subsample ${E6_EVENTS:-60} \
+              --budget ${BUDGET:-full} --history-batches ${HIST_BATCHES:-64} ${EVENTS:+--events $EVENTS} \
               --top-n 25 --sample-n 25 --shard $i/$W --out $R/e6 > $R/e6/e6_${d}_shard$i.log 2>&1 &
             pids+=($!)
           done
           fail=0; for p in "${pids[@]}"; do wait $p || fail=1; done
           [ $fail -eq 0 ] || { echo "e6 $d: a shard failed, see $R/e6/e6_${d}_shard*.log"; exit 1; } ;;
   e7)     d=${1:?day}
-          cat $R/expl/seed_$SEED/explanations_${d}*.jsonl > $R/expl_${d}_all.jsonl
+          cat ${E7_EXPL_DIR:-$R/expl/seed_$SEED}/explanations_${d}*.jsonl > $R/expl_${d}_all.jsonl
           python -m provex.pipeline local-vs-full --ckpt $CKPT --day-file $G/graph_$d.TemporalData.simple \
-            --explanations $R/expl_${d}_all.jsonl --out $R/local_vs_full.json --max-alerts ${E7_ALERTS:-30} --workers $(nproc) ;;
+            --explanations $R/expl_${d}_all.jsonl --out ${E7_OUT:-$R/local_vs_full.json} --max-alerts ${E7_ALERTS:-30} \
+            --workers ${E7_WORKERS:-$(nproc)} --history-batches ${HIST_BATCHES:-64} ;;
   tables) python scripts/aggregate_e6.py --records "$R/e6/*.jsonl" --out $R || true
           mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated
           python scripts/make_case_studies.py --results $R --gt-dir $GT --out paper/generated ;;
