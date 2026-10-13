@@ -36,7 +36,7 @@ PROVEX explains the alerts of [KAIROS](https://github.com/ProvenanceAnalytics/ka
 You need Python 3.10+, PyTorch 2.5.1, PyTorch Geometric 2.7.0 and torch-scatter 2.1.2. CPU wheels are enough; all replays run on CPU because CUDA scatter tie-breaking is nondeterministic.
 
 ```bash
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.5.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 pip install torch-scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.5.0+cpu.html
 pip install -r requirements-v2.txt
 python -m pytest -q tests
