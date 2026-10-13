@@ -1,0 +1,7 @@
+{
+  "hardware_cpu": "a GCP e2-standard-4 VM (4 vCPUs, 16 GB RAM; one CPU thread per worker)",
+  "hardware_gpu": "a GCP g2-standard-8 VM with one NVIDIA L4 GPU",
+  "release_tag": "v2.0.0",
+  "top_n": 25,
+  "sample_n": 25
+}

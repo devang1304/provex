@@ -1,0 +1,7 @@
+# config.env is shared and holds no secrets: re-include it despite the repo-wide '**.env' rule.
+!config.env
+# Personal overrides (billing account id, contact e-mail, ...) - never committed.
+config.local.env
+# Scratch space of the scripts (LF-normalised metadata copies, sync tarballs, lifecycle json).
+.build/
+__pycache__/

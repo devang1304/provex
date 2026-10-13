@@ -160,3 +160,10 @@ secrets.toml
 # Misc
 *.sage.py
 cython_debug/
+
+# v2: tracked helper scripts and generated-table sources
+!scripts/
+
+# upstream KAIROS has no license: fetched + patched on the VM by kairos/setup_upstream.sh
+kairos/upstream/
+kairos/cadets_e3/

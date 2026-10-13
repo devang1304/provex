@@ -1,0 +1,3 @@
+# Everything under infra/gcp runs under bash / Linux: keep LF line endings on checkout,
+# even with core.autocrlf=true (CRLF breaks `source config.env` and the VM startup scripts).
+* text=auto eol=lf

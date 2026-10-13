@@ -1,0 +1,268 @@
+PROVEX patch 07-node-level-gt
+New node_gt.py maps the PIDSMaker/Orthrus node-level ground truth to KAIROS index_ids. Name matching is the default; UUID -> hash_id -> node2id through the database is optional.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/node_gt.py b/node_gt.py
+new file mode 100644
+index 0000000..810e34e
+--- /dev/null
++++ b/node_gt.py
+@@ -0,0 +1,257 @@
++"""Map the node-level ground truth of the CADETS E3 attacks to KAIROS node ids.
++
++Input: the PIDSMaker/Orthrus ground-truth CSVs (ground_truth/cadets_e3/orthrus/),
++one malicious node per line:  UUID,{'<type>': '<label>'},<id>
++The last column is PIDSMaker's own database id, NOT a KAIROS index_id.
++
++KAIROS identifies a node by its name only (node2id.hash_id is the sha256 of the
++subject exec / file path / "srcaddr,srcport,dstaddr,dstport"), so several CDM
++UUIDs can collapse onto one KAIROS index_id.
++
++Mappers
++  name (default)  GT label -> KAIROS node label. The labels come from a node map
++                  JSON {"<index_id>": "<type>: <name>"} (--node-map, default
++                  $KAIROS_NODE_MAP_JSON, e.g. PROVEX's artifact/explanations/
++                  node_mapping.json) or, without one, from the node2id table.
++                    subject 'None nginx'                -> subject 'nginx'
++                    file    '/tmp/vUgefal'              -> file '/tmp/vUgefal'
++                    netflow '128.55.12.73:80->81.49.200.166:43530'
++                                                        -> netflow '81.49.200.166:43530'
++                  KAIROS netflow labels only keep the remote address:port, so a
++                  netflow GT entry maps to every index_id with that label (with
++                  the database, the exact sha256 of the 4-tuple is tried first).
++  uuid            (--mode uuid|both, needs the database) UUID -> hash_id via
++                  subject_node_table / file_node_table / netflow_node_table, then
++                  hash_id -> index_id via node2id.
++
++Output: <artifact_dir>ground_truth/kairos_nodes_<attack>.json
++  {"attack": ..., "nodes": {"<index_id>": {"name": "<type>: <name>",
++   "msg": "{'<type>': '<name>'}", "uuids": [...], "mapped_by": [...]}},
++   "rows": [...], "unmapped": [...], "stats": {...}}
++"msg" is the node string used in the time-window files (srcmsg/dstmsg).
++"""
++import argparse
++import ast
++import hashlib
++import json
++import os
++
++from config import *
++
++
++DEFAULT_GT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
++                              "..", "..", "ground_truth", "cadets_e3", "orthrus")
++
++
++def read_gt_csv(path):
++    """Rows (uuid, node_type, label) of one ground-truth CSV."""
++    rows = []
++    with open(path, "r", encoding="utf-8") as f:
++        for line in f:
++            line = line.strip()
++            if not line:
++                continue
++            uuid, rest = line.split(",", 1)
++            attr, _pidsmaker_id = rest.rsplit(",", 1)
++            attr = ast.literal_eval(attr)
++            node_type, label = next(iter(attr.items()))
++            rows.append((uuid.strip(), node_type, str(label)))
++    return rows
++
++
++def candidate_names(node_type, label):
++    """KAIROS node names (node2id.msg) a GT label may correspond to, best first."""
++    if node_type == "subject":
++        # PIDSMaker labels CADETS E3 subjects '<path> <cmdLine>' with path None;
++        # KAIROS names a subject by the "exec" of its events.
++        names = []
++        if label.startswith("None "):
++            names.append(label[len("None "):])
++        names.append(label)
++        if label.split():
++            names.append(label.split()[-1])
++    elif node_type == "file":
++        names = [] if label in ("", "None") else [label]
++    elif node_type == "netflow":
++        # '<local addr>:<local port>-><remote addr>:<remote port>'
++        names = [label.split("->", 1)[1]] if "->" in label else [label]
++    else:
++        names = [label]
++    unique = []
++    for n in names:
++        if n not in unique:
++            unique.append(n)
++    return unique
++
++
++def netflow_hash(label):
++    """KAIROS hash_id of a netflow GT label (create_database.store_netflow)."""
++    if "->" not in label:
++        return None
++    local, remote = label.split("->", 1)
++    src_addr, src_port = local.rsplit(":", 1)
++    dst_addr, dst_port = remote.rsplit(":", 1)
++    node_property = src_addr + "," + src_port + "," + dst_addr + "," + dst_port
++    return hashlib.sha256(node_property.encode("utf-8")).hexdigest()
++
++
++def load_node_map_json(path):
++    """index_id -> (node_type, name) from {"<index_id>": "<node_type>: <name>"}."""
++    with open(path, "r", encoding="utf-8") as f:
++        mapping = json.load(f)
++    id2label = {}
++    for index_id, value in mapping.items():
++        node_type, sep, name = value.partition(": ")
++        if not sep:
++            raise ValueError(f"{path}: unexpected node label {value!r} for id {index_id}")
++        id2label[int(index_id)] = (node_type, name)
++    return id2label
++
++
++def connect_db():
++    import psycopg2
++    kwargs = dict(database=database, user=user, password=password, port=port)
++    if host is not None:
++        kwargs["host"] = host
++    connect = psycopg2.connect(**kwargs)
++    return connect.cursor(), connect
++
++
++def load_node2id_db(cur):
++    """(index_id -> (node_type, name), hash_id -> index_id) from node2id."""
++    cur.execute("select hash_id, node_type, msg, index_id from node2id;")
++    id2label = {}
++    hash2id = {}
++    for hash_id, node_type, msg, index_id in cur.fetchall():
++        id2label[int(index_id)] = (node_type, msg)
++        hash2id[hash_id] = int(index_id)
++    return id2label, hash2id
++
++
++def uuid_to_hashes(cur, uuids):
++    """UUID (upper case) -> [(table, hash_id)] from the three node tables."""
++    variants = sorted({v for u in uuids for v in (u, u.upper(), u.lower())})
++    found = {}
++    for table in ("subject_node_table", "file_node_table", "netflow_node_table"):
++        cur.execute(f"select node_uuid, hash_id from {table} where node_uuid = ANY(%s);", (variants,))
++        for node_uuid, hash_id in cur.fetchall():
++            entry = (table, hash_id)
++            found.setdefault(node_uuid.upper(), [])
++            if entry not in found[node_uuid.upper()]:
++                found[node_uuid.upper()].append(entry)
++    return found
++
++
++def map_attack(attack, csv_path, mode, id2label, label2ids, hash2id, cur):
++    rows = read_gt_csv(csv_path)
++    uuid_hits = uuid_to_hashes(cur, [r[0] for r in rows]) if mode in ("uuid", "both") else {}
++
++    nodes = {}
++    row_results = []
++    unmapped = []
++    for uuid, node_type, label in rows:
++        ids = []
++        how = {}
++        if mode in ("uuid", "both"):
++            for table, hash_id in uuid_hits.get(uuid.upper(), []):
++                if hash_id in hash2id:
++                    ids.append(hash2id[hash_id])
++                    how.setdefault(hash2id[hash_id], []).append("uuid:" + table)
++        if mode in ("name", "both"):
++            name_ids = []
++            if node_type == "netflow" and hash2id is not None:
++                h = netflow_hash(label)
++                if h in hash2id:
++                    name_ids = [hash2id[h]]
++                    how.setdefault(hash2id[h], []).append("name:netflow_hash")
++            if not name_ids:
++                for name in candidate_names(node_type, label):
++                    name_ids = label2ids.get((node_type, name), [])
++                    if name_ids:
++                        for i in name_ids:
++                            how.setdefault(i, []).append("name:" + node_type)
++                        break
++            ids += name_ids
++        ids = sorted(set(ids))
++
++        row_results.append({"uuid": uuid, "type": node_type, "label": label,
++                            "index_ids": ids, "ambiguous": len(ids) > 1})
++        if not ids:
++            reasons = []
++            if mode in ("uuid", "both"):
++                reasons.append("uuid not in node tables" if uuid.upper() not in uuid_hits
++                               else "hash_id not in node2id")
++            if mode in ("name", "both"):
++                reasons.append("no path in GT label" if not candidate_names(node_type, label)
++                               else "no KAIROS node with this name")
++            unmapped.append({"uuid": uuid, "type": node_type, "label": label, "reason": "; ".join(reasons)})
++            continue
++        for i in ids:
++            t, n = id2label[i]
++            entry = nodes.setdefault(i, {"name": f"{t}: {n}", "msg": str({t: n}), "type": t,
++                                         "uuids": [], "mapped_by": []})
++            if uuid not in entry["uuids"]:
++                entry["uuids"].append(uuid)
++            for h in how.get(i, []):
++                if h not in entry["mapped_by"]:
++                    entry["mapped_by"].append(h)
++
++    return {
++        "attack": attack,
++        "source_csv": os.path.abspath(csv_path),
++        "mode": mode,
++        "note": "keys of 'nodes' are KAIROS node2id.index_id; the CSV's last column "
++                "(PIDSMaker database id) is not used",
++        "nodes": {str(i): nodes[i] for i in sorted(nodes)},
++        "rows": row_results,
++        "unmapped": unmapped,
++        "stats": {
++            "gt_rows": len(rows),
++            "mapped_rows": len(rows) - len(unmapped),
++            "unmapped_rows": len(unmapped),
++            "ambiguous_rows": sum(1 for r in row_results if r["ambiguous"]),
++            "kairos_nodes": len(nodes),
++        },
++    }
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    parser.add_argument("--mode", choices=["name", "uuid", "both"], default="name",
++                        help="name: label matching (default, no database needed with a node map); "
++                             "uuid: UUID -> hash_id -> index_id through the database; both: union")
++    parser.add_argument("--node-map", default=os.environ.get("KAIROS_NODE_MAP_JSON") or None,
++                        help="node map JSON {index_id: '<type>: <name>'} "
++                             "(default: $KAIROS_NODE_MAP_JSON; without it node2id is read from the database)")
++    parser.add_argument("--gt-dir", default=os.environ.get("KAIROS_GT_DIR") or DEFAULT_GT_DIR,
++                        help="directory with the node_Nginx_Backdoor_*.csv files")
++    parser.add_argument("--out-dir", default=artifact_dir + "ground_truth/",
++                        help="output directory (default: <artifact_dir>ground_truth/)")
++    parser.add_argument("--attacks", nargs="+", default=list(cadets_e3_attacks),
++                        help="attacks to map (default: all of config.cadets_e3_attacks)")
++    args = parser.parse_args()
++
++    cur = None
++    hash2id = None
++    if args.mode in ("uuid", "both") or args.node_map is None:
++        cur, _ = connect_db()
++    if args.node_map is not None and args.mode == "name":
++        id2label = load_node_map_json(args.node_map)
++    else:
++        id2label, hash2id = load_node2id_db(cur)
++    label2ids = {}
++    for i, label in id2label.items():
++        label2ids.setdefault(label, []).append(i)
++
++    os.makedirs(args.out_dir, exist_ok=True)
++    for attack in args.attacks:
++        csv_path = os.path.join(args.gt_dir, cadets_e3_attacks[attack]["gt_csv"])
++        result = map_attack(attack, csv_path, args.mode, id2label, label2ids, hash2id, cur)
++        out_path = os.path.join(args.out_dir, f"kairos_nodes_{attack}.json")
++        with open(out_path, "w", encoding="utf-8") as f:
++            json.dump(result, f, indent=2)
++        s = result["stats"]
++        print(f"{attack}: {s['mapped_rows']}/{s['gt_rows']} GT rows mapped to "
++              f"{s['kairos_nodes']} KAIROS nodes ({s['ambiguous_rows']} ambiguous) -> {out_path}")
++        for u in result["unmapped"]:
++            print(f"  unmapped {u['uuid']} {u['type']} {u['label']!r}: {u['reason']}")

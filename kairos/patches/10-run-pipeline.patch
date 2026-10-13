@@ -1,0 +1,248 @@
+PROVEX patch 10-run-pipeline
+New run_pipeline.sh with the stages db_setup, create_database, embedding, train, test, queues, evaluation and node_gt. Each stage can be skipped and is logged; the no-DB path is the default and --full-rebuild adds the database stages.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/run_pipeline.sh b/run_pipeline.sh
+new file mode 100755
+index 0000000..86b98ec
+--- /dev/null
++++ b/run_pipeline.sh
+@@ -0,0 +1,237 @@
++#!/usr/bin/env bash
++# KAIROS CADETS E3 pipeline: upstream ProvenanceAnalytics/kairos@0e0b633 + PROVEX patches.
++#
++# Usage:
++#   ./run_pipeline.sh [--seed N] [--full-rebuild] [--skip s1,s2] [--only s1,s2]
++#
++# Stages, in order:
++#   db_setup         create the Postgres database + tables (upstream settings/database.md)
++#   create_database  parse the raw CADETS E3 JSON into Postgres    python create_database.py
++#   embedding        vectorize the day graphs graph_4_2..graph_4_13 python embedding.py
++#   train            train on graph_4_2..graph_4_4                  python train.py --seed N
++#   test             reconstruct graph_4_3..graph_4_13              python test.py --seed N
++#   queues           anomalous queues of graph_4_5..graph_4_13      python anomalous_queue_construction.py --seed N
++#   evaluation       window-level metrics for all four attacks      python evaluation.py --seed N
++#   node_gt          node-level ground truth -> KAIROS index_ids    python node_gt.py
++#
++# Default = no-DB path: db_setup, create_database and embedding are skipped and
++# the pre-built day graphs ($KAIROS_GRAPHS_DIR) and node labels
++# ($KAIROS_NODE_MAP_JSON) are used. --full-rebuild also runs the three database
++# stages (needs PostgreSQL and the raw data in $KAIROS_RAW_DIR).
++# --only runs exactly the listed stages (database stages included);
++# --skip removes stages from the default/full list.
++#
++# Environment (default):
++#   KAIROS_ARTIFACT_DIR (./artifact/ in this directory), KAIROS_GRAPHS_DIR
++#   (<artifact>/graphs/), KAIROS_NODE_MAP_JSON, KAIROS_RAW_DIR, KAIROS_GT_DIR
++#   PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
++#     (/var/run/postgresql/, 5432, postgres, postgres, tc_cadet_dataset_db)
++#   PYTHON (python), PSQL (psql; e.g. PSQL="sudo -u postgres psql")
++#   NODE_GT_ARGS (extra node_gt.py arguments, e.g. "--mode both")
++#   FORCE_CREATE_DATABASE=1 runs create_database.py even if node2id is not empty
++# Relative paths are taken relative to the directory run_pipeline.sh is started from.
++# Logs: <artifact>/logs/<stage>.log (seeded stages: <stage>_seed<N>.log)
++
++set -euo pipefail
++
++SEED=0
++FULL_REBUILD=0
++SKIP=""
++ONLY=""
++while [ $# -gt 0 ]; do
++  case "$1" in
++    --seed) SEED="$2"; shift 2 ;;
++    --full-rebuild) FULL_REBUILD=1; shift ;;
++    --skip) SKIP="$2"; shift 2 ;;
++    --only) ONLY="$2"; shift 2 ;;
++    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
++    *) echo "unknown argument: $1" >&2; exit 2 ;;
++  esac
++done
++
++ALL_STAGES="db_setup create_database embedding train test queues evaluation node_gt"
++DB_STAGES="db_setup,create_database,embedding"
++RAW_FILES="ta1-cadets-e3-official.json ta1-cadets-e3-official.json.1 ta1-cadets-e3-official.json.2
++ta1-cadets-e3-official-1.json ta1-cadets-e3-official-1.json.1 ta1-cadets-e3-official-1.json.2
++ta1-cadets-e3-official-1.json.3 ta1-cadets-e3-official-1.json.4 ta1-cadets-e3-official-2.json
++ta1-cadets-e3-official-2.json.1"
++
++in_list() { case ",$2," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
++
++for s in ${ONLY//,/ } ${SKIP//,/ }; do
++  in_list "$s" "${ALL_STAGES// /,}" || { echo "unknown stage: $s (stages: $ALL_STAGES)" >&2; exit 2; }
++done
++case "$SEED" in ''|*[!0-9]*) echo "--seed must be a non-negative integer" >&2; exit 2 ;; esac
++
++# Make user-supplied relative paths absolute before moving to the script directory
++for v in KAIROS_ARTIFACT_DIR KAIROS_GRAPHS_DIR KAIROS_NODE_MAP_JSON KAIROS_RAW_DIR KAIROS_GT_DIR; do
++  val="${!v:-}"
++  if [ -n "$val" ] && [ "${val#/}" = "$val" ]; then
++    export "$v=$PWD/$val"
++  fi
++done
++cd "$(dirname "$0")"
++
++PYTHON="${PYTHON:-python}"
++PSQL="${PSQL:-psql}"
++ARTIFACT_DIR="${KAIROS_ARTIFACT_DIR:-./artifact/}"
++ARTIFACT_DIR="${ARTIFACT_DIR%/}/"
++GRAPHS_DIR="${KAIROS_GRAPHS_DIR:-${ARTIFACT_DIR}graphs/}"
++LOG_DIR="${ARTIFACT_DIR}logs"
++DB_NAME="${PGDATABASE:-tc_cadet_dataset_db}"
++DB_OWNER="${PGUSER:-postgres}"
++
++# Determinism: must be set before the Python interpreter / first cuBLAS call
++export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
++export PYTHONHASHSEED="${PYTHONHASHSEED:-$SEED}"
++export PYTHONUNBUFFERED=1
++
++mkdir -p "$ARTIFACT_DIR" "$LOG_DIR"
++
++should_run() {
++  if [ -n "$ONLY" ]; then
++    in_list "$1" "$ONLY"
++    return
++  fi
++  if [ -n "$SKIP" ] && in_list "$1" "$SKIP"; then
++    return 1
++  fi
++  if [ "$FULL_REBUILD" -eq 0 ] && in_list "$1" "$DB_STAGES"; then
++    return 1
++  fi
++  return 0
++}
++
++run_stage() {  # run_stage <stage> <log name> <command...>
++  local stage="$1" log="$LOG_DIR/$2.log" start=$SECONDS
++  shift 2
++  echo "[$(date '+%F %T')] >>> $stage: $*" | tee -a "$log"
++  "$@" 2>&1 | tee -a "$log"
++  echo "[$(date '+%F %T')] <<< $stage done in $((SECONDS - start))s" | tee -a "$log"
++}
++
++stage_db_setup() {
++  if [ "$($PSQL -d postgres -tAc "select 1 from pg_database where datname = '$DB_NAME'")" != "1" ]; then
++    $PSQL -d postgres -v ON_ERROR_STOP=1 -c "create database $DB_NAME;"
++  fi
++  # Tables of upstream DARPA/settings/database.md (CADETS E3), made idempotent
++  $PSQL -d "$DB_NAME" -v ON_ERROR_STOP=1 -v owner="$DB_OWNER" <<'SQL'
++create table if not exists event_table
++(
++    src_node      varchar,
++    src_index_id  varchar,
++    operation     varchar,
++    dst_node      varchar,
++    dst_index_id  varchar,
++    timestamp_rec bigint,
++    _id           serial
++);
++alter table event_table owner to :"owner";
++create unique index if not exists event_table__id_uindex on event_table (_id);
++grant delete, insert, references, select, trigger, truncate, update on event_table to :"owner";
++
++create table if not exists file_node_table
++(
++    node_uuid varchar not null,
++    hash_id   varchar not null,
++    path      varchar,
++    constraint file_node_table_pk
++        primary key (node_uuid, hash_id)
++);
++alter table file_node_table owner to :"owner";
++
++create table if not exists netflow_node_table
++(
++    node_uuid varchar not null,
++    hash_id   varchar not null,
++    src_addr  varchar,
++    src_port  varchar,
++    dst_addr  varchar,
++    dst_port  varchar,
++    constraint netflow_node_table_pk
++        primary key (node_uuid, hash_id)
++);
++alter table netflow_node_table owner to :"owner";
++
++create table if not exists subject_node_table
++(
++    node_uuid varchar,
++    hash_id   varchar,
++    exec      varchar
++);
++alter table subject_node_table owner to :"owner";
++
++create table if not exists node2id
++(
++    hash_id   varchar not null
++        constraint node2id_pk
++            primary key,
++    node_type varchar,
++    msg       varchar,
++    index_id  bigint
++);
++alter table node2id owner to :"owner";
++create unique index if not exists node2id_hash_id_uindex on node2id (hash_id);
++SQL
++}
++
++stage_create_database() {
++  local raw="${KAIROS_RAW_DIR:?set KAIROS_RAW_DIR to the directory with the CADETS E3 JSON files}" n f
++  n="$($PSQL -d "$DB_NAME" -tAc "select count(*) from node2id")"
++  if [ "$n" != "0" ] && [ "${FORCE_CREATE_DATABASE:-0}" != "1" ]; then
++    echo "node2id already holds $n rows; create_database.py would insert duplicates. Skipped (FORCE_CREATE_DATABASE=1 to run anyway)."
++    return 0
++  fi
++  for f in $RAW_FILES; do
++    [ -f "${raw%/}/$f" ] || { echo "missing raw file: ${raw%/}/$f" >&2; return 1; }
++  done
++  "$PYTHON" create_database.py
++}
++
++stage_embedding() {
++  "$PYTHON" embedding.py
++}
++
++stage_train() {
++  "$PYTHON" train.py --seed "$SEED"
++}
++
++stage_test() {
++  if [ -z "${KAIROS_NODE_MAP_JSON:-}" ]; then
++    echo "KAIROS_NODE_MAP_JSON is not set: test.py reads the node labels from the database"
++  fi
++  "$PYTHON" test.py --seed "$SEED"
++}
++
++stage_queues() {
++  "$PYTHON" anomalous_queue_construction.py --seed "$SEED"
++}
++
++stage_evaluation() {
++  "$PYTHON" evaluation.py --seed "$SEED"
++}
++
++stage_node_gt() {
++  # shellcheck disable=SC2086
++  "$PYTHON" node_gt.py ${NODE_GT_ARGS:-}
++}
++
++if [ "$FULL_REBUILD" -eq 0 ] && { should_run train || should_run test; }; then
++  [ -f "${GRAPHS_DIR%/}/graph_4_2.TemporalData.simple" ] || {
++    echo "no day graphs in $GRAPHS_DIR (set KAIROS_GRAPHS_DIR, or use --full-rebuild)" >&2
++    exit 1
++  }
++fi
++
++echo "KAIROS CADETS E3 pipeline: seed=$SEED artifact=$ARTIFACT_DIR graphs=$GRAPHS_DIR logs=$LOG_DIR"
++for stage in $ALL_STAGES; do
++  if ! should_run "$stage"; then
++    echo "[skip] $stage"
++    continue
++  fi
++  case "$stage" in
++    train|test|queues|evaluation) log="${stage}_seed${SEED}" ;;
++    *) log="$stage" ;;
++  esac
++  run_stage "$stage" "$log" "stage_$stage"
++done

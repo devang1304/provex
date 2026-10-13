@@ -1,0 +1,23 @@
+PROVEX patch 08-fix-cal-anomaly-loss-zero-division
+FIX, labelled separately: cal_anomaly_loss() divides by zero when no edge of a window exceeds mean + 1.5*std. Such a window now gets an average anomalous loss of 0 instead of crashing the queue construction; windows that work upstream are unaffected.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/anomalous_queue_construction.py b/anomalous_queue_construction.py
+index 3912817..1651ee0 100644
+--- a/anomalous_queue_construction.py
++++ b/anomalous_queue_construction.py
+@@ -44,6 +44,13 @@ def cal_anomaly_loss(loss_list, edge_list):
+             node_set.add(src_node)
+             node_set.add(dst_node)
+             edge_set.add(edge_list[i][0] + edge_list[i][1])
++    if count == 0:
++        # [08-guard] No edge above mean + 1.5 * std (e.g. all edge losses of the
++        # window are equal): upstream raises ZeroDivisionError here. Treat the
++        # window as having no anomalous edge: average anomalous loss 0, i.e. a
++        # queue factor of (0 + 1) = 1, and an empty anomalous node set. Windows
++        # with count > 0 are unaffected.
++        return count, 0, node_set, edge_set
+     return count, loss_sum / count, node_set, edge_set
+ 
+ def compute_IDF():

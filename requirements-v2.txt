@@ -1,0 +1,15 @@
+# PROVEX v2 runtime (pinned). Install on the VMs with uv; see infra/gcp/vm/setup_python.sh.
+# CPU VM:  --index-url https://download.pytorch.org/whl/cpu    ;  torch_scatter: -f https://data.pyg.org/whl/torch-2.5.0+cpu.html
+# GPU VM:  --index-url https://download.pytorch.org/whl/cu124  ;  torch_scatter: -f https://data.pyg.org/whl/torch-2.5.0+cu124.html
+torch==2.5.1
+torch_geometric==2.7.0
+torch_scatter==2.1.2
+numpy>=1.26,<2.0
+scipy>=1.11
+scikit-learn>=1.5
+pytz>=2023.3
+xxhash>=3.4
+networkx>=3.3
+tqdm>=4.66
+pyyaml>=6.0
+pytest>=8.0

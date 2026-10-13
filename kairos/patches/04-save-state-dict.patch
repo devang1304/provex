@@ -1,0 +1,98 @@
+PROVEX patch 04-save-state-dict
+train.py also saves models/models_state.pt (state_dicts + hyperparams + seed + upstream_sha) and train_log.json (per-epoch loss and wall time); the pickled models.pt is kept.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/config.py b/config.py
+index a3e3d25..aeb28a1 100644
+--- a/config.py
++++ b/config.py
+@@ -14,6 +14,11 @@ def _env_dir(name, default):
+     return os.path.join(_env(name, default), "")
+ 
+ 
++# Upstream KAIROS commit (ProvenanceAnalytics/kairos) this copy is derived from;
++# recorded in models_state.pt / train_log.json / detection_metrics.json.
++upstream_sha = "0e0b633beb46a1117c0a6d63be5d2481b59ac0dc"
++
++
+ ########################################################
+ #
+ #                   Artifacts path
+diff --git a/train.py b/train.py
+index a2f2074..1328d63 100644
+--- a/train.py
++++ b/train.py
+@@ -4,6 +4,8 @@
+ ##########################################################################################
+ 
+ import logging
++import json
++import time
+ 
+ from kairos_utils import *
+ from config import *
+@@ -122,8 +124,13 @@ if __name__ == "__main__":
+     memory, gnn, link_pred, optimizer, neighbor_loader = init_models(node_feat_size=node_feat_size)
+ 
+     # train the model
++    train_graph_names = ["graph_4_2", "graph_4_3", "graph_4_4"]  # same order as load_train_data()
++    train_log = {"seed": args.seed, "upstream_sha": upstream_sha, "epochs": []}
++    train_start = time.perf_counter()
+     for epoch in tqdm(range(1, epoch_num+1)):
+-        for g in train_data:
++        epoch_start = time.perf_counter()
++        epoch_losses = {}
++        for g_name, g in zip(train_graph_names, train_data):
+             loss = train(
+                 train_data=g,
+                 memory=memory,
+@@ -133,9 +140,48 @@ if __name__ == "__main__":
+                 neighbor_loader=neighbor_loader
+             )
+             logger.info(f'  Epoch: {epoch:02d}, Loss: {loss:.4f}')
++            epoch_losses[g_name] = float(loss)
++        train_log["epochs"].append({
++            "epoch": epoch,
++            "loss": epoch_losses,  # mean per-event loss of each training day graph
++            "mean_loss": float(np.mean(list(epoch_losses.values()))),
++            "wall_time_s": time.perf_counter() - epoch_start,
++        })
++    train_log["total_wall_time_s"] = time.perf_counter() - train_start
+ 
+     # Save the trained model
+     model = [memory, gnn, link_pred, neighbor_loader]
+ 
+     os.system(f"mkdir -p {models_dir}")
+     torch.save(model, f"{models_dir}/models.pt")
++
++    # Additionally save plain state_dicts + hyper-parameters, loadable without
++    # unpickling the upstream classes (the pickled models.pt above is kept).
++    hyperparams = {
++        "memory_dim": node_state_dim,
++        "time_dim": time_dim,
++        "embedding_dim": edge_dim,
++        "neighbor_size": neighbor_size,
++        "raw_msg_dim": node_feat_size,
++        "max_node_num": max_node_num,
++        "include_edge_type": list(include_edge_type),
++        "node_embedding_dim": node_embedding_dim,
++        "batch_size": BATCH,
++        "lr": lr,
++        "eps": eps,
++        "weight_decay": weight_decay,
++        "epoch_num": epoch_num,
++        "time_window_size": time_window_size,
++    }
++    torch.save({
++        "memory": memory.state_dict(),
++        "gnn": gnn.state_dict(),
++        "link_pred": link_pred.state_dict(),
++        "hyperparams": hyperparams,
++        "seed": args.seed,
++        "upstream_sha": upstream_sha,
++    }, f"{models_dir}/models_state.pt")
++
++    train_log["hyperparams"] = hyperparams
++    with open(f"{artifact_dir}/train_log.json", "w") as f:
++        json.dump(train_log, f, indent=2)

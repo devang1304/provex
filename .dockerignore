@@ -1,0 +1,10 @@
+.git
+artifact
+artifact.tar.gz
+results
+paper/generated
+kairos/upstream
+kairos/cadets_e3
+**/__pycache__
+*.pyc
+.venv

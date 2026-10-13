@@ -1,0 +1,152 @@
+PROVEX patch 02-seeds-determinism
+set_seed() (python/numpy/torch/cuda, cudnn deterministic, torch.use_deterministic_algorithms(warn_only=True), CUBLAS_WORKSPACE_CONFIG) and --seed in train/test/queues/evaluation/attack_investigation; a seeded run lives in <artifact_dir>seed_<n>/.
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/anomalous_queue_construction.py b/anomalous_queue_construction.py
+index 7a8874a..2490019 100644
+--- a/anomalous_queue_construction.py
++++ b/anomalous_queue_construction.py
+@@ -5,6 +5,10 @@ import torch
+ from kairos_utils import *
+ from config import *
+ 
++# --seed <n>: use the run in <artifact_dir>seed_<n>/
++args = seed_arg_parser("Build the KAIROS anomalous time-window queues.").parse_args()
++artifact_dir = seed_artifact_dir(args.seed)
++
+ # Setting for logging
+ logger = logging.getLogger("anomalous_queue_logger")
+ logger.setLevel(logging.INFO)
+diff --git a/attack_investigation.py b/attack_investigation.py
+index 2aa325e..d723765 100644
+--- a/attack_investigation.py
++++ b/attack_investigation.py
+@@ -9,6 +9,13 @@ from tqdm import tqdm
+ from config import *
+ from kairos_utils import *
+ 
++# --seed <n>: use the run in <artifact_dir>seed_<n>/ and seed the Louvain
++# community detection (it draws from numpy's global RNG)
++args = seed_arg_parser("KAIROS attack investigation (CADETS E3, 2018-04-06 windows).").parse_args()
++if args.seed is not None:
++    set_seed(args.seed)
++artifact_dir = seed_artifact_dir(args.seed)
++
+ 
+ # Some common path abstraction for visualization
+ replace_dic = {
+diff --git a/evaluation.py b/evaluation.py
+index 8632661..5d4a2df 100644
+--- a/evaluation.py
++++ b/evaluation.py
+@@ -5,6 +5,10 @@ from kairos_utils import *
+ from config import *
+ from model import *
+ 
++# --seed <n>: use the run in <artifact_dir>seed_<n>/
++args = seed_arg_parser("Evaluate KAIROS time-window detection on CADETS E3.").parse_args()
++artifact_dir = seed_artifact_dir(args.seed)
++
+ 
+ # Setting for logging
+ logger = logging.getLogger("evaluation_logger")
+diff --git a/kairos_utils.py b/kairos_utils.py
+index b924fd3..2dac11f 100644
+--- a/kairos_utils.py
++++ b/kairos_utils.py
+@@ -25,6 +25,8 @@ import copy
+ import time
+ import xxhash
+ import gc
++import argparse
++import random
+ 
+ from config import *
+ 
+@@ -151,6 +153,46 @@ def hashgen(l):
+         hasher.update(e)
+     return hasher.intdigest()
+ 
++def set_seed(seed):
++    """Seed python, numpy and torch (CPU and CUDA) and request deterministic kernels.
++
++    Call it before any model or CUDA tensor op is built. CUBLAS_WORKSPACE_CONFIG
++    only takes effect if set before the first cuBLAS call, and PYTHONHASHSEED
++    only affects child processes, so run_pipeline.sh exports both as well.
++    torch ops without a deterministic implementation only emit a warning
++    (warn_only=True) and torch_scatter extension kernels used by PyG are not
++    covered by the flag, so GPU runs are seeded but not guaranteed to be
++    bitwise reproducible.
++    """
++    seed = int(seed)
++    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
++    os.environ["PYTHONHASHSEED"] = str(seed)
++    random.seed(seed)
++    np.random.seed(seed)
++    torch.manual_seed(seed)
++    torch.cuda.manual_seed_all(seed)
++    torch.backends.cudnn.deterministic = True
++    torch.backends.cudnn.benchmark = False
++    torch.use_deterministic_algorithms(True, warn_only=True)
++
++def seed_artifact_dir(seed):
++    """Artifact directory of one seeded run: <artifact_dir>seed_<n>/.
++
++    With seed=None the upstream layout (<artifact_dir> itself) is kept. The
++    vectorized graphs (graphs_dir) stay shared by all seeds.
++    """
++    if seed is None:
++        return artifact_dir
++    return artifact_dir + "seed_" + str(seed) + "/"
++
++def seed_arg_parser(description):
++    """argparse parser with the --seed option shared by all pipeline scripts."""
++    parser = argparse.ArgumentParser(description=description)
++    parser.add_argument("--seed", type=int, default=None,
++                        help="random seed; outputs go to <artifact_dir>seed_<n>/ "
++                             "(default: unseeded, upstream artifact layout)")
++    return parser
++
+ 
+ 
+ 
+diff --git a/test.py b/test.py
+index 6298dff..aaa6967 100644
+--- a/test.py
++++ b/test.py
+@@ -9,6 +9,15 @@ from kairos_utils import *
+ from config import *
+ from model import *
+ 
++# --seed <n>: seed every RNG and use the run in <artifact_dir>seed_<n>/
++parser = seed_arg_parser("Reconstruct the CADETS E3 day graphs with a trained KAIROS model.")
++args = parser.parse_args()
++if args.seed is not None:
++    set_seed(args.seed)
++artifact_dir = seed_artifact_dir(args.seed)
++models_dir = artifact_dir + "models/"
++os.makedirs(artifact_dir, exist_ok=True)
++
+ # Setting for logging
+ logger = logging.getLogger("reconstruction_logger")
+ logger.setLevel(logging.INFO)
+diff --git a/train.py b/train.py
+index 0e172fa..089c611 100644
+--- a/train.py
++++ b/train.py
+@@ -9,6 +9,14 @@ from kairos_utils import *
+ from config import *
+ from model import *
+ 
++# --seed <n>: seed every RNG and write this run to <artifact_dir>seed_<n>/
++args = seed_arg_parser("Train the KAIROS model on CADETS E3 (graph_4_2..graph_4_4).").parse_args()
++if args.seed is not None:
++    set_seed(args.seed)
++artifact_dir = seed_artifact_dir(args.seed)
++models_dir = artifact_dir + "models/"
++os.makedirs(artifact_dir, exist_ok=True)
++
+ # Setting for logging
+ logger = logging.getLogger("training_logger")
+ logger.setLevel(logging.INFO)

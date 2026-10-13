@@ -1,0 +1,45 @@
+{
+  "source": "DARPA Transparent Computing Engagement 3, TC_Ground_Truth_Report_E3_Update.pdf (Kudu Dynamics, TA5.1), linked from https://github.com/darpa-i2o/Transparent-Computing/blob/master/README-E3.md",
+  "note": "Transcribed from the report's CADETS sections. Times are the report's local times (US/Eastern). All IP addresses in the report are fictional (README-E3). Paths are as written in the report; a bare file name was dropped by the operator console into the implant's working directory (usually /tmp).",
+  "attacks": {
+    "Nginx_Backdoor_06": {
+      "day": "4_6", "section": "3.1", "start": "2018-04-06 11:21", "end": "2018-04-06 12:08",
+      "summary": "Nginx exploited by HTTP POST; loaderDrakon connects to the operator console; implant /tmp/vUgefal elevated to root; netrecon to 154.145.113.18 fails and to 61.167.39.128 succeeds; libdrakon dropped at /var/log/devc; injection into sshd (PID 809) fails and the host panics.",
+      "ips": {"81.49.200.166": "exploit (http_post)", "78.205.235.65": "shellcode server", "200.36.109.214": "loaderDrakon",
+              "139.123.0.113": "drakon implant C2", "152.111.159.139": "libdrakon server", "154.145.113.18": "netrecon target (failed; listed as 154.143.113.18 in the report's address table)",
+              "61.167.39.128": "netrecon target (succeeded)"},
+      "files": ["/tmp/vUgefal", "/var/log/devc"],
+      "processes": ["nginx", "vUgefal", "sshd"]
+    },
+    "Nginx_Backdoor_11": {
+      "day": "4_11", "section": "3.8", "start": "2018-04-11 15:08", "end": "2018-04-11 15:15",
+      "summary": "Nginx exploited on the first attempt; drakon runs in nginx memory; libdrakon dropped as sendmail (failed) and grain; injection of /tmp/grain into PID 802 fails and the host crashes at 15:15.",
+      "ips": {"25.159.96.207": "exploit (http post)", "76.56.184.25": "shellcode server", "155.162.39.48": "loaderDrakon",
+              "198.115.236.119": "libdrakon server (download failed)"},
+      "files": ["/tmp/grain", "sendmail"],
+      "processes": ["nginx"]
+    },
+    "Nginx_Backdoor_12": {
+      "day": "4_12", "section": "3.13", "start": "2018-04-12 14:00", "end": "2018-04-12 14:38",
+      "summary": "Nginx re-exploited; micro APT dropped as tmux-1002 and minions but elevation fails; drakon executable XIM elevated to root with C2 to 53.158.101.118; micro APT run unprivileged (sendmail, main, test) with C2 to 192.113.144.28; port scans of eight internal hosts; the operator console connection is left open.",
+      "ips": {"25.159.96.207": "exploit / webserver", "76.56.184.25": "shellcode server", "155.162.39.48": "loaderDrakon",
+              "198.115.236.119": "libdrakon server (failed)", "53.158.101.118": "drakon (XIM) C2", "98.15.44.232": "micro APT (failed)",
+              "192.113.144.28": "micro APT 2 (sendmail) C2"},
+      "scan_targets": ["128.55.12.166", "128.55.12.67", "128.55.12.141", "128.55.12.110", "128.55.12.118", "128.55.12.10", "128.55.12.1", "128.55.12.55"],
+      "files": ["/tmp/tmux-1002", "/tmp/minions", "/tmp/font", "/tmp/XIM", "/var/log/netlog", "/var/log/sendmail", "/tmp/main", "/tmp/test"],
+      "processes": ["nginx", "XIM", "sendmail", "main", "test", "minions", "tmux-1002"]
+    },
+    "Nginx_Backdoor_13": {
+      "day": "4_13", "section": "3.14", "start": "2018-04-13 09:04", "end": "2018-04-13 09:15",
+      "summary": "Attacker reconnects to the connection left open on 04-12, then re-exploits nginx; drakon executable pEja72mA elevated to root with C2 to 53.158.101.118; libdrakon copies (eWq10bVcx, memhelp.so, eraseme, done.so) injected into sshd PID 20691 three times, all failing; sshd becomes unresponsive.",
+      "ips": {"25.159.96.207": "exploit / webserver", "128.55.12.73": "local address used for the HTTP request (nc -s 25.159.96.207 128.55.12.73 80)",
+              "76.56.184.25": "shellcode server", "155.162.39.48": "loaderDrakon", "198.115.236.119": "libdrakon server (sshd connection)",
+              "53.158.101.118": "drakon (pEja72mA) C2", "78.205.235.65": "nginx connection listed in the report"},
+      "files": ["/tmp/pEja72mA", "eWq10bVcx", "/tmp/memhelp.so", "eraseme", "/tmp/done.so"],
+      "processes": ["nginx", "pEja72mA", "sshd"]
+    }
+  },
+  "not_attacks_on_cadets": {
+    "postfix_phishing_relay": "Section 4.1: phishing e-mails to other hosts were sent through the postfix server hosted on CADETS from 62.83.155.175 (2018-04-06 14:40 and 15:02, 04-09 13:19 and 14:19, 04-10 12:28). Not an attack on the CADETS host; unlabelled in every label set."
+  }
+}

@@ -1,0 +1,499 @@
+PROVEX patch 06-eval-all-attacks
+Queues for graph_4_5..graph_4_13 (plus per-window loss statistics); evaluation of all four CADETS E3 attacks (window-level GT: the upstream 04-06 windows, interval overlap for 04-11/12/13) with per-day, overall and per-attack metrics plus the upstream protocol in detection_metrics.json, and alerts.json / windows.json, all in <artifact_dir>[seed_<n>/].
+Series: upstream ProvenanceAnalytics/kairos@0e0b633beb46a1117c0a6d63be5d2481b59ac0dc DARPA/CADETS_E3, patches 01..11 applied in numeric order.
+Paths are relative to DARPA/CADETS_E3: apply to a copy of kairos/upstream/ that is outside any git work tree (git apply <patch>), or from the repository root with git apply --directory=<copy dir> <patch>.
+
+diff --git a/anomalous_queue_construction.py b/anomalous_queue_construction.py
+index 2490019..3912817 100644
+--- a/anomalous_queue_construction.py
++++ b/anomalous_queue_construction.py
+@@ -165,6 +165,13 @@ def anomalous_queue_construction(node_IDF, tw_list, graph_dir_path):
+         current_tw['loss'] = loss_avg
+         current_tw['index'] = index_count
+         current_tw['nodeset'] = node_set
++        # Per-window statistics, reported in windows.json by evaluation.py
++        # (not used by the queue construction itself)
++        current_tw['n_edges'] = len(edge_loss_list)
++        current_tw['loss_mean'] = float(mean(edge_loss_list))
++        current_tw['loss_std'] = float(std(edge_loss_list))
++        current_tw['threshold'] = float(mean(edge_loss_list) + 1.5 * std(edge_loss_list))
++        current_tw['n_anomalous_edges'] = count
+ 
+         # Incrementally construct the queues
+         added_que_flag = False
+@@ -198,25 +205,17 @@ if __name__ == "__main__":
+ 
+     node_IDF, tw_list = compute_IDF()
+ 
+-    # Validation date
+-    history_list = anomalous_queue_construction(
+-        node_IDF=node_IDF,
+-        tw_list=tw_list,
+-        graph_dir_path=f"{artifact_dir}/graph_4_5/"
+-    )
+-    torch.save(history_list, f"{artifact_dir}/graph_4_5_history_list")
+-
+-    # Testing date
+-    history_list = anomalous_queue_construction(
+-        node_IDF=node_IDF,
+-        tw_list=tw_list,
+-        graph_dir_path=f"{artifact_dir}/graph_4_6/"
+-    )
+-    torch.save(history_list, f"{artifact_dir}/graph_4_6_history_list")
+-
+-    history_list = anomalous_queue_construction(
+-        node_IDF=node_IDF,
+-        tw_list=tw_list,
+-        graph_dir_path=f"{artifact_dir}/graph_4_7/"
+-    )
+-    torch.save(history_list, f"{artifact_dir}/graph_4_7_history_list")
+\ No newline at end of file
++    # Validation date (graph_4_5) and testing dates (graph_4_6 .. graph_4_13).
++    # Queues are built per day, exactly as upstream; the node IDF always comes
++    # from graph_4_3 .. graph_4_5. Days without reconstruction results are skipped.
++    for graph_name in [validation_graph] + queue_test_graphs:
++        graph_dir_path = f"{artifact_dir}/{graph_name}/"
++        if not os.path.isdir(graph_dir_path):
++            logger.info(f"{graph_name}: no reconstruction results in {graph_dir_path}, skipped")
++            continue
++        history_list = anomalous_queue_construction(
++            node_IDF=node_IDF,
++            tw_list=tw_list,
++            graph_dir_path=graph_dir_path
++        )
++        torch.save(history_list, f"{artifact_dir}/{graph_name}_history_list")
+diff --git a/config.py b/config.py
+index 20b4c3d..fa2aad1 100644
+--- a/config.py
++++ b/config.py
+@@ -173,3 +173,41 @@ test_graphs = ["graph_4_" + str(day) for day in range(3, 14)]
+ 
+ beta_day6 = 100
+ beta_day7 = 100
++
++# Threshold of the other testing days (graph_4_8 .. graph_4_13). Upstream only
++# defines day 6 and day 7, both 100.
++beta_default = 100
++beta_by_graph = {"graph_4_6": beta_day6, "graph_4_7": beta_day7}
++
++
++########################################################
++#
++#           Evaluation over all CADETS E3 attacks
++#
++########################################################
++
++# Validation day: its largest queue score is reported (as upstream)
++validation_graph = "graph_4_5"
++
++# Days on which anomalous queues are built and thresholded
++# (upstream: graph_4_6 and graph_4_7 only; missing days are skipped)
++queue_test_graphs = ["graph_4_" + str(day) for day in range(6, 14)]
++
++# CADETS E3 attacks. Times are US/Eastern wall-clock time, the convention of
++# ns_time_to_datetime_US() that names the time-window files.
++#   window_gt = "upstream": the four upstream 2018-04-06 windows
++#               (evaluation.py, UPSTREAM_ATTACK_WINDOWS) are the ground truth;
++#               the interval is only reported as a cross-check.
++#   window_gt = "overlap":  every time window overlapping [start, end] is malicious.
++# Intervals: PIDSMaker (ubc-provenance/PIDSMaker) CADETS_E3 attack_to_time_window;
++# gt_csv: its node-level ground truth (Ground_Truth/orthrus/E3-CADETS/).
++cadets_e3_attacks = {
++    "Nginx_Backdoor_06": {"graph": "graph_4_6", "start": "2018-04-06 11:20:00", "end": "2018-04-06 12:09:00",
++                          "window_gt": "upstream", "gt_csv": "node_Nginx_Backdoor_06.csv"},
++    "Nginx_Backdoor_11": {"graph": "graph_4_11", "start": "2018-04-11 15:07:00", "end": "2018-04-11 15:16:00",
++                          "window_gt": "overlap", "gt_csv": "node_Nginx_Backdoor_11.csv"},
++    "Nginx_Backdoor_12": {"graph": "graph_4_12", "start": "2018-04-12 13:59:00", "end": "2018-04-12 14:39:00",
++                          "window_gt": "overlap", "gt_csv": "node_Nginx_Backdoor_12.csv"},
++    "Nginx_Backdoor_13": {"graph": "graph_4_13", "start": "2018-04-13 09:03:00", "end": "2018-04-13 09:16:00",
++                          "window_gt": "overlap", "gt_csv": "node_Nginx_Backdoor_13.csv"},
++}
+diff --git a/evaluation.py b/evaluation.py
+index f1624d7..dfc9092 100644
+--- a/evaluation.py
++++ b/evaluation.py
+@@ -1,5 +1,6 @@
+ from sklearn.metrics import confusion_matrix
+ import logging
++import json
+ 
+ from kairos_utils import *
+ from config import *
+@@ -98,12 +99,75 @@ def calc_attack_edges():
+                 attack_edge_count += 1
+     logger.info(f"Num of attack edges: {attack_edge_count}")
+ 
++# The four upstream ground-truth windows of the 2018-04-06 attack (identical to
++# the list in ground_truth_label() above).
++UPSTREAM_ATTACK_WINDOWS = [
++    '2018-04-06 11:18:26.126177915~2018-04-06 11:33:35.116170745.txt',
++    '2018-04-06 11:33:35.116170745~2018-04-06 11:48:42.606135188.txt',
++    '2018-04-06 11:48:42.606135188~2018-04-06 12:03:50.186115455.txt',
++    '2018-04-06 12:03:50.186115455~2018-04-06 14:01:32.489584227.txt',
++]
++
++def queue_anomaly_score(hl):
++    """Upstream anomaly score of a queue: product of (loss + 1) over its time windows."""
++    anomaly_score = 0
++    for hq in hl:
++        if anomaly_score == 0:
++            # Plus 1 to ensure anomaly score is monotonically increasing
++            anomaly_score = (anomaly_score + 1) * (hq['loss'] + 1)
++        else:
++            anomaly_score = (anomaly_score) * (hq['loss'] + 1)
++    return anomaly_score
++
++def window_bounds(window_name):
++    """'<begin>~<end>.txt' -> (begin, end), both '%Y-%m-%d %H:%M:%S.<9 digits>' (US/Eastern)."""
++    w_begin, w_end = window_name[:-len(".txt")].split("~")
++    return w_begin, w_end
++
++def window_overlaps(window_name, start, end):
++    """True if time window '<begin>~<end>.txt' overlaps [start, end].
++
++    start/end are '%Y-%m-%d %H:%M:%S' (US/Eastern). Window names come from
++    ns_time_to_datetime_US() ('%Y-%m-%d %H:%M:%S.<9 digits>', US/Eastern), a
++    fixed-width format, so plain string comparison is exact.
++    """
++    w_begin, w_end = window_bounds(window_name)
++    return w_begin <= end + ".000000000" and w_end >= start + ".000000000"
++
++def binary_metrics(y, y_pred):
++    """Window-level metrics; undefined ratios (e.g. on benign days) are None."""
++    n = len(y)
++    if n == 0:
++        return {"n_windows": 0}
++    tn, fp, fn, tp = (int(v) for v in confusion_matrix(y, y_pred, labels=[0, 1]).ravel())
++    precision = tp / (tp + fp) if tp + fp > 0 else None
++    recall = tp / (tp + fn) if tp + fn > 0 else None
++    if precision is None or recall is None:
++        fscore = None
++    elif precision + recall == 0:
++        fscore = 0.0
++    else:
++        fscore = 2 * (precision * recall) / (precision + recall)
++    return {
++        "n_windows": n,
++        "tp": tp,
++        "fp": fp,
++        "fn": fn,
++        "tn": tn,
++        "precision": precision,
++        "recall": recall,
++        "fscore": fscore,
++        "accuracy": (tp + tn) / n,
++        "fpr": fp / (fp + tn) if fp + tn > 0 else None,
++        "auc_val": float(roc_auc_score(y, y_pred)) if len(set(y)) == 2 else None,
++    }
++
+ if __name__ == "__main__":
+     logger.info("Start logging.")
+ 
+     # Validation date
+     anomalous_queue_scores = []
+-    history_list = torch.load(f"{artifact_dir}/graph_4_5_history_list", weights_only=False)
++    history_list = torch.load(f"{artifact_dir}/{validation_graph}_history_list", weights_only=False)
+     for hl in history_list:
+         anomaly_score = 0
+         for hq in hl:
+@@ -121,60 +185,228 @@ if __name__ == "__main__":
+ 
+         anomalous_queue_scores.append(anomaly_score)
+     logger.info(f"The largest anomaly score in validation set is: {max(anomalous_queue_scores)}\n")
++    day_history = {validation_graph: history_list}
+ 
+ 
+-    # Evaluating the testing set
+-    pred_label = {}
+-
+-    filelist = os.listdir(f"{artifact_dir}/graph_4_6/")
+-    for f in filelist:
+-        pred_label[f] = 0
++    # Evaluating every testing day (graph_4_6 .. graph_4_13): as upstream, every
++    # time window of a queue whose score exceeds beta is predicted anomalous.
++    # Note: upstream queue construction can put one window into several queues.
++    windows_by_graph = {}
++    pred_by_graph = {}
++    day_queues = {}
++    for graph_name in queue_test_graphs:
++        history_path = f"{artifact_dir}/{graph_name}_history_list"
++        if not os.path.exists(history_path):
++            logger.info(f"{graph_name}: no anomalous queues ({history_path}), skipped")
++            continue
++        beta = beta_by_graph.get(graph_name, beta_default)
++        logger.info(f"Testing date {graph_name} (beta={beta})")
+ 
+-    filelist = os.listdir(f"{artifact_dir}/graph_4_7/")
+-    for f in filelist:
+-        pred_label[f] = 0
++        pred_label = {}
++        filelist = os.listdir(f"{artifact_dir}/{graph_name}/")
++        for f in filelist:
++            pred_label[f] = 0
+ 
+-    history_list = torch.load(f"{artifact_dir}/graph_4_6_history_list", weights_only=False)
+-    for hl in history_list:
+-        anomaly_score = 0
+-        for hq in hl:
+-            if anomaly_score == 0:
+-                anomaly_score = (anomaly_score + 1) * (hq['loss'] + 1)
+-            else:
+-                anomaly_score = (anomaly_score) * (hq['loss'] + 1)
+-        name_list = []
+-        if anomaly_score > beta_day6:
++        queues = []
++        window_scores = {}  # largest score of the queues that contain the window
++        history_list = torch.load(history_path, weights_only=False)
++        for queue_id, hl in enumerate(history_list):
++            anomaly_score = queue_anomaly_score(hl)
+             name_list = []
+             for i in hl:
+                 name_list.append(i['name'])
+-            logger.info(f"Anomalous queue: {name_list}")
+-            for i in name_list:
+-                pred_label[i] = 1
+-            logger.info(f"Anomaly score: {anomaly_score}")
++                window_scores[i['name']] = max(window_scores.get(i['name'], 0.0), float(anomaly_score))
++            if anomaly_score > beta:
++                logger.info(f"Anomalous queue: {name_list}")
++                for i in name_list:
++                    pred_label[i] = 1
++                logger.info(f"Anomaly score: {anomaly_score}")
++            queues.append({"queue_id": queue_id,
++                           "score": float(anomaly_score),
++                           "anomalous": bool(anomaly_score > beta),
++                           "windows": name_list})
+ 
+-    history_list = torch.load(f"{artifact_dir}/graph_4_7_history_list", weights_only=False)
+-    for hl in history_list:
+-        anomaly_score = 0
+-        for hq in hl:
+-            if anomaly_score == 0:
+-                anomaly_score = (anomaly_score + 1) * (hq['loss'] + 1)
+-            else:
+-                anomaly_score = (anomaly_score) * (hq['loss'] + 1)
+-        name_list = []
+-        if anomaly_score > beta_day7:
+-            name_list = []
+-            for i in hl:
+-                name_list.append(i['name'])
+-            logger.info(f"Anomalous queue: {name_list}")
+-            for i in name_list:
+-                pred_label[i]=1
+-            logger.info(f"Anomaly score: {anomaly_score}")
+-
+-    # Calculate the metrics
+-    labels = ground_truth_label()
+-    y = []
+-    y_pred = []
+-    for i in labels:
+-        y.append(labels[i])
+-        y_pred.append(pred_label[i])
+-    classifier_evaluation(y, y_pred)
+\ No newline at end of file
++        windows_by_graph[graph_name] = sorted(filelist)
++        pred_by_graph[graph_name] = pred_label
++        day_history[graph_name] = history_list
++        day_queues[graph_name] = {"beta": beta, "queues": queues, "window_scores": window_scores}
++
++    # Window-level ground truth of every attack on an evaluated day
++    ground_truth = {}
++    gt_by_graph = {graph_name: set() for graph_name in windows_by_graph}
++    for attack, spec in cadets_e3_attacks.items():
++        windows = windows_by_graph.get(spec["graph"])
++        overlap = [w for w in (windows or []) if window_overlaps(w, spec["start"], spec["end"])]
++        if spec["window_gt"] == "upstream":
++            gt_windows = list(UPSTREAM_ATTACK_WINDOWS)
++        else:
++            gt_windows = overlap
++        missing = [w for w in gt_windows if windows is not None and w not in windows]
++        if missing:
++            # Counted as false negatives below
++            logger.warning(f"{attack}: ground-truth windows not found in {spec['graph']}: {missing}")
++        if windows is not None:
++            gt_by_graph[spec["graph"]].update(gt_windows)
++        ground_truth[attack] = {
++            "graph": spec["graph"],
++            "evaluated": windows is not None,
++            "interval_us_eastern": [spec["start"], spec["end"]],
++            "window_gt": spec["window_gt"],
++            "windows": gt_windows,
++            "overlap_windows": overlap,
++            "missing_windows": missing,
++        }
++
++    # Metrics per day and pooled over all evaluated testing days
++    per_day = {}
++    all_y = []
++    all_y_pred = []
++    for graph_name, windows in windows_by_graph.items():
++        gt = gt_by_graph[graph_name]
++        pred_label = pred_by_graph[graph_name]
++        names = list(windows) + sorted(w for w in gt if w not in pred_label)
++        y = [1 if w in gt else 0 for w in names]
++        y_pred = [pred_label.get(w, 0) for w in names]
++        metrics = binary_metrics(y, y_pred)
++        logger.info(f"{graph_name}: {metrics}")
++        all_y += y
++        all_y_pred += y_pred
++        per_day[graph_name] = {
++            "beta": day_queues[graph_name]["beta"],
++            "attacks": [a for a, s in cadets_e3_attacks.items() if s["graph"] == graph_name],
++            **metrics,
++            "gt_windows": sorted(gt),
++            "flagged_windows": sorted(w for w in names if pred_label.get(w, 0) == 1),
++            "queues": day_queues[graph_name]["queues"],
++            "window_scores": day_queues[graph_name]["window_scores"],
++        }
++    overall = binary_metrics(all_y, all_y_pred)
++    logger.info(f"Overall ({', '.join(windows_by_graph)}): {overall}")
++
++    per_attack = {}
++    for attack, gt in ground_truth.items():
++        if not gt["evaluated"]:
++            per_attack[attack] = {"graph": gt["graph"], "evaluated": False}
++            continue
++        pred_label = pred_by_graph[gt["graph"]]
++        window_scores = day_queues[gt["graph"]]["window_scores"]
++        detected_windows = [w for w in gt["windows"] if pred_label.get(w, 0) == 1]
++        per_attack[attack] = {
++            "graph": gt["graph"],
++            "evaluated": True,
++            "n_gt_windows": len(gt["windows"]),
++            "n_detected_windows": len(detected_windows),
++            "detected": len(detected_windows) > 0,
++            "detected_windows": detected_windows,
++            "max_gt_window_score": max([window_scores.get(w, 0.0) for w in gt["windows"]], default=None),
++        }
++        logger.info(f"{attack}: {per_attack[attack]}")
++
++    # Upstream protocol, comparable with the paper: windows of graph_4_6 and
++    # graph_4_7, beta_day6 / beta_day7, ground truth = the four upstream windows.
++    upstream_protocol = None
++    upstream_graphs = ["graph_4_6", "graph_4_7"]
++    if all(g in windows_by_graph for g in upstream_graphs):
++        labels = {}
++        pred_label = {}
++        for g in upstream_graphs:
++            for f in windows_by_graph[g]:
++                labels[f] = 0
++            pred_label.update(pred_by_graph[g])
++        for i in UPSTREAM_ATTACK_WINDOWS:
++            labels[i] = 1
++        y = []
++        y_pred = []
++        for i in labels:
++            y.append(labels[i])
++            y_pred.append(pred_label.get(i, 0))
++        logger.info("Upstream protocol (graph_4_6 + graph_4_7, upstream 2018-04-06 ground truth):")
++        classifier_evaluation(y, y_pred)
++        upstream_protocol = {
++            "graphs": upstream_graphs,
++            "beta": {"graph_4_6": beta_day6, "graph_4_7": beta_day7},
++            "gt_windows": UPSTREAM_ATTACK_WINDOWS,
++            "missing_gt_windows": [w for w in UPSTREAM_ATTACK_WINDOWS if w not in pred_label],
++            **binary_metrics(y, y_pred),
++        }
++
++    # alerts.json: one row per (queue, window) of every queue with score > beta
++    alerts = []
++    for graph_name, dq in day_queues.items():
++        for q in dq["queues"]:
++            if not q["anomalous"]:
++                continue
++            for w in q["windows"]:
++                w_begin, w_end = window_bounds(w)
++                alerts.append({
++                    "day": graph_name[len("graph_"):],
++                    "window_file": w,
++                    "start": w_begin,
++                    "end": w_end,
++                    "start_ns": ns_time_from_datetime_US(w_begin),
++                    "end_ns": ns_time_from_datetime_US(w_end),
++                    "queue_id": q["queue_id"],
++                    "queue_score": q["score"],
++                    "beta": float(dq["beta"]),
++                    "is_gt_attack_window": w in gt_by_graph[graph_name],
++                })
++
++    # windows.json: every time window of the validation and testing days with
++    # its edge-loss statistics (threshold = mean + 1.5 * std, as cal_anomaly_loss)
++    windows_rows = []
++    for graph_name, history_list in day_history.items():
++        seen = {}
++        for hl in history_list:
++            for tw in hl:
++                seen.setdefault(tw['name'], tw)
++        for w in sorted(seen):
++            tw = seen[w]
++            w_begin, w_end = window_bounds(w)
++            windows_rows.append({
++                "day": graph_name[len("graph_"):],
++                "split": "validation" if graph_name == validation_graph else "test",
++                "window_file": w,
++                "start": w_begin,
++                "end": w_end,
++                "start_ns": ns_time_from_datetime_US(w_begin),
++                "end_ns": ns_time_from_datetime_US(w_end),
++                "n_edges": tw.get('n_edges'),
++                "loss_mean": tw.get('loss_mean'),
++                "loss_std": tw.get('loss_std'),
++                "threshold": tw.get('threshold'),
++                "n_anomalous_edges": tw.get('n_anomalous_edges'),
++                "anomalous_loss_avg": float(tw['loss']),
++            })
++
++    results = {
++        "seed": args.seed,
++        "upstream_sha": upstream_sha,
++        "artifact_dir": artifact_dir,
++        "config": {
++            "validation_graph": validation_graph,
++            "idf_graphs": ["graph_4_3", "graph_4_4", "graph_4_5"],
++            "queue_test_graphs": queue_test_graphs,
++            "evaluated_graphs": list(windows_by_graph),
++            "time_window_size_ns": time_window_size,
++            "timezone": "US/Eastern",
++        },
++        "validation": {
++            "graph": validation_graph,
++            "num_queues": len(anomalous_queue_scores),
++            "max_queue_score": float(max(anomalous_queue_scores)),
++        },
++        "ground_truth": ground_truth,
++        "overall": overall,
++        "per_attack": per_attack,
++        "upstream_protocol": upstream_protocol,
++        "n_alerts": len(alerts),
++        "per_day": per_day,
++    }
++    with open(f"{artifact_dir}/detection_metrics.json", "w") as f:
++        json.dump(results, f, indent=2)
++    with open(f"{artifact_dir}/alerts.json", "w") as f:
++        json.dump(alerts, f, indent=2)
++    with open(f"{artifact_dir}/windows.json", "w") as f:
++        json.dump(windows_rows, f, indent=2)
++    logger.info(f"Wrote detection_metrics.json, alerts.json ({len(alerts)} rows) and "
++                f"windows.json ({len(windows_rows)} rows) to {artifact_dir}")
+diff --git a/kairos_utils.py b/kairos_utils.py
+index 2dac11f..6bb20ea 100644
+--- a/kairos_utils.py
++++ b/kairos_utils.py
+@@ -52,6 +52,17 @@ def ns_time_to_datetime_US(ns):
+     s += '.' + str(int(int(ns) % 1000000000)).zfill(9)
+     return s
+ 
++def ns_time_from_datetime_US(s):
++    """
++    Inverse of ns_time_to_datetime_US() (used for the time-window file names).
++    :param s: str   format: 2013-10-10 23:40:00.000000000 (US/Eastern)
++    :return: int nano timestamp
++    """
++    tz = pytz.timezone('US/Eastern')
++    date, _, frac = s.partition('.')
++    dt = tz.localize(datetime.strptime(date, '%Y-%m-%d %H:%M:%S'))
++    return int(dt.timestamp()) * 1000000000 + (int(frac) if frac else 0)
++
+ def time_to_datetime_US(s):
+     """
+     :param ns: int nano timestamp

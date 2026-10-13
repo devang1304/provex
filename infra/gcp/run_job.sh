@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# run_job.sh - run ONE batch job on a PROVEX VM. The VM is started if needed and powers itself
+# off when the job ends - even if this laptop sleeps or disconnects.
+#
+# Usage:
+#   ./run_job.sh <vm> <max_hours> <job_name> [--follow] [--no-sync] [--no-shutdown] -- <command...>
+#   ./run_job.sh --status <vm>     active job + tail of its log (or the VM state)
+#   ./run_job.sh --abort  <vm>     TERM the active job; the VM uploads logs and powers off
+#
+#   <vm>         cpu | gpu | any instance name in the project
+#   <max_hours>  hard limit for the command, fractional ok (0.25 = 15 min), <= MAX_JOB_HOURS
+#   <job_name>   [A-Za-z0-9._-], unique per run; logs go to <bucket>/jobs/<job_name>/
+#   <command>    ONE argument  -> bash command string, e.g. 'python -m pytest -q tests'
+#                several args  -> shell-quoted and joined
+#                It runs in /data/provex with /data/provex/.venv activated (if present).
+#   --follow       stream job.log after the launch (Ctrl-C stops following, not the job)
+#   --no-sync      do not push the local working tree first
+#   --no-shutdown  leave the VM up afterwards (the idle watchdog stops it ~IDLE_MINUTES later)
+#
+# Flow: start VM (GCE max-run-duration = max_hours + HARD_CAP_GRACE_MIN, action STOP) -> wait
+# for the startup marker + ssh -> sync working tree -> tmux session "provex-job" runs
+# vm/job_runner.sh: sampler (60 s) -> monitor.log; heartbeat + GCS rsync (5 min);
+# `timeout <max_hours>h <command>` -> job.log; exit code; final rsync; ledger row in
+# <bucket>/ledger/runs.csv; `sudo shutdown -h now`. If the launch fails, a VM this script
+# started is stopped again.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+MODE=run FOLLOW=0 NO_SYNC=0 NO_SHUTDOWN=0
+case ${1:-} in
+  ""|-h|--help) usage_from_header "${INFRA_DIR}/run_job.sh"; exit 0 ;;
+  --status|--abort)
+    [[ $# -eq 2 ]] || die "usage: ./run_job.sh $1 <vm>"
+    MODE=${1#--}
+    VM="$(resolve_vm "$2")" ;;
+  *)
+    [[ $# -ge 3 ]] || die "usage: ./run_job.sh <vm> <max_hours> <job_name> [options] -- <command...>"
+    VM="$(resolve_vm "$1")"; HOURS=$2; JOB=$3
+    shift 3
+    while (( $# )); do
+      case $1 in
+        --follow) FOLLOW=1 ;;
+        --no-sync) NO_SYNC=1 ;;
+        --no-shutdown) NO_SHUTDOWN=1 ;;
+        --) shift; break ;;
+        *) die "unknown option '$1' (the command goes after --)" ;;
+      esac
+      shift
+    done
+    (( $# >= 1 )) || die "missing command after --"
+    if (( $# == 1 )); then CMD=$1; else CMD="$(printf '%q ' "$@")"; CMD=${CMD% }; fi
+    [[ $JOB =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || die "job_name must match [A-Za-z0-9][A-Za-z0-9._-]{0,62}"
+    [[ $HOURS =~ ^[0-9]+([.][0-9]+)?$ ]] || die "max_hours must be a number (e.g. 2 or 0.5)"
+    awk -v h="$HOURS" -v m="$MAX_JOB_HOURS" 'BEGIN { exit !(h > 0 && h <= m) }' \
+      || die "max_hours must be > 0 and <= MAX_JOB_HOURS (${MAX_JOB_HOURS})"
+    ;;
+esac
+
+require_gcloud
+require_project_id
+
+# ------------------------------------------------------------------ --status / --abort
+if [[ $MODE != run ]]; then
+  load_instance "$VM" || die "VM ${VM} not found in ${PROJECT_ID}"
+  if [[ $I_STATUS != RUNNING ]]; then
+    log "${VM} is ${I_STATUS} - no job is running. Last ledger rows for it:"
+    ledger_cat | awk -F, -v v="$VM" '$2 == v' | tail -n 5 || true
+    exit 0
+  fi
+  vm_ssh "$VM" "$I_ZONE" "bash ~/jobs/.runner.sh ${MODE}" || true
+  exit 0
+fi
+
+# ------------------------------------------------------------------ run
+CAP_MIN="$(cap_minutes_for_hours "$HOURS")"
+LAUNCHED=0
+on_exit() {
+  local rc=$?
+  if (( STARTED_BY_US == 1 && LAUNCHED == 0 )); then
+    # Stop only when we can positively see that NO job runs there. A launcher killed or timed out
+    # long after it started the VM must not stop a job launched since by another invocation
+    # (this happened once). When unsure, leave it: the idle watchdog stops an idle VM in ~15 min.
+    if vm_ssh "$VM" "$I_ZONE" "tmux has-session -t =provex-job 2>/dev/null && echo BUSY || echo IDLE" \
+         < /dev/null 2>/dev/null | tr -d '\r' | grep -qx IDLE; then
+      warn "the launch did not complete - stopping ${VM} (verified idle) so it does not sit idle"
+      stop_vm "$VM" "$I_ZONE" async >/dev/null 2>&1 || warn "could not stop ${VM} - run ./down.sh"
+    else
+      warn "the launch did not complete; ${VM} is busy or unreachable - NOT stopping it (idle watchdog applies)"
+    fi
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM
+
+step "Job '${JOB}' on ${VM}: max ${HOURS} h (VM hard cap ${CAP_MIN} min)"
+ensure_running "$VM" "$CAP_MIN"
+case "$(job_session_state "$VM" "$I_ZONE")" in
+  FREE) : ;;
+  BUSY) die "a '${JOB_SESSION}' tmux session is already running on ${VM} (./run_job.sh --status ${VM})" ;;
+  *) die "could not check for a running job on ${VM} over ssh" ;;
+esac
+
+if (( NO_SYNC )); then
+  SYNC_COMMIT="$(git -C "$INFRA_DIR" rev-parse --short HEAD 2>/dev/null || echo none)-nosync"
+  log "--no-sync: using the code already on ${VM}"
+else
+  step "Syncing the local working tree -> ${VM}:${REMOTE_REPO_DIR}"
+  sync_working_tree "$VM" "$I_ZONE"
+fi
+
+RATE="$(rate_for "$I_MACHINE" "$I_MODEL")"
+META="$(printf '%s=%q\n' \
+  JOB "$JOB" VM_NAME "$VM" VM_ZONE "$I_ZONE" MACHINE_TYPE "$I_MACHINE" PROVISIONING_MODEL "$I_MODEL" \
+  BUCKET "$BUCKET" MAX_HOURS "$HOURS" RATE_USD_H "$RATE" NO_SHUTDOWN "$NO_SHUTDOWN" \
+  REPO_DIR "$REMOTE_REPO_DIR" GIT_COMMIT "$SYNC_COMMIT")"
+CMD_B64="$(printf '# PROVEX job %s - generated by run_job.sh\n%s\n' "$JOB" "$CMD" | base64 -w0)"
+META_B64="$(printf '%s\n' "$META" | base64 -w0)"
+(( ${#CMD_B64} + ${#META_B64} < 7000 )) || die "command too long for one ssh call - put it in a script in the repo and run that"
+RUNNER="${REMOTE_REPO_DIR}/infra/gcp/vm/job_runner.sh"
+
+step "Launching tmux session '${JOB_SESSION}' on ${VM}"
+OUT="$(vm_ssh "$VM" "$I_ZONE" "test -f ${RUNNER} || { echo PROVEX-NO-RUNNER; exit 3; }; bash ${RUNNER} launch ${JOB} ${HOURS} ${CMD_B64} ${META_B64}")" || true
+printf '%s\n' "$OUT"
+if [[ $OUT == *PROVEX-NO-RUNNER* ]]; then die "${RUNNER} is missing on ${VM} - run without --no-sync"; fi
+[[ $OUT == *PROVEX-LAUNCHED* ]] || die "launch failed (see output above)"
+LAUNCHED=1
+
+cat <<EOF
+
+Job '${JOB}' is running on ${VM} (${I_MACHINE}, ${I_MODEL}, ~${RATE} USD/h). The VM powers itself off when it ends
+(timeout ${HOURS} h; GCE hard cap ${CAP_MIN} min after boot; idle watchdog ${IDLE_MINUTES} min).
+
+  follow the log : gcloud compute ssh ${SSH_USER}@${VM} --zone=${I_ZONE} --command='tail -n 50 -F ~/jobs/${JOB}/job.log'
+  attach to tmux : gcloud compute ssh ${SSH_USER}@${VM} --zone=${I_ZONE} --command='tmux attach -t ${JOB_SESSION}' -- -t   (detach: Ctrl-b d)
+  status / abort : ./run_job.sh --status ${VM}   |   ./run_job.sh --abort ${VM}
+  logs in GCS    : gcloud storage cat ${BUCKET}/jobs/${JOB}/job.log     (synced every 5 min + at the end)
+  ledger         : gcloud storage cat ${BUCKET}/ledger/runs.csv
+EOF
+
+if (( FOLLOW )); then
+  step "Following job.log (Ctrl-C stops following; the job keeps running)"
+  vm_ssh "$VM" "$I_ZONE" "tail -n 100 -F ~/jobs/${JOB}/job.log" || true
+fi
