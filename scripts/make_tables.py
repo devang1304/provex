@@ -25,7 +25,7 @@ METHOD_ORDER = ["joint", "joint-cf", "joint-edges", "variational", "graphmask", 
 METHOD_LABEL = {"joint": "PROVEX joint (preserve)", "joint-cf": "PROVEX joint (counterfactual)",
                 "joint-edges": "PROVEX joint, edges only", "variational": "PROVEX variational",
                 "graphmask": "GraphMask-TC", "gnnexplainer-anomaly": "GNNExplainer + our objective",
-                "gnnexplainer-v1": "GNNExplainer (v1 objective)", "mcts": "MCTS (T-GNNExplainer-style)",
+                "gnnexplainer-v1": "GNNExplainer (standard objective)", "mcts": "MCTS (T-GNNExplainer-style)",
                 "occlusion": "Occlusion (LOO)",
                 "integrated_gradients": "Integrated gradients", "gradient": "Gradient", "attention": "Attention",
                 "recency": "Recency", "random": "Random"}

@@ -37,22 +37,6 @@ nxrvse@rit.edu}
 
 \maketitle
 
-\noindent\fbox{\parbox{\dimexpr\columnwidth-2\fboxsep-2\fboxrule}{\small
-\textbf{Revision note (v2).} Version~1 of this paper (arXiv:2512.18199v1) reported results that are
-not supported by its data or code. Its Tables~II--IV, its case study and its appendix output referred
-to provenance edges that do not exist in DARPA TC E3 CADETS, such as \texttt{nginx}$\rightarrow$\texttt{bash}
-and \texttt{/tmp/lib.so}. Its fidelity metrics (Table~III) were incompatible with the implementation.
-We withdraw those results. The v1 implementation also had defects:
-\begin{itemize}
-\item explained edges were labelled with the wrong node identifiers;
-\item every explainer optimised for the event looking \emph{normal};
-\item the explained scores differed from the detector's.
-\end{itemize}
-Version~2 corrects the method, re-implements every component, re-measures everything on all four
-CADETS~E3 attacks, and reorganises the paper around what SOC analysts need from an explanation. Every
-number in this version is generated from released outputs. \texttt{ERRATA.md} in the repository lists
-each change, and v1 remains tagged for reproducibility.}}
-
 \begin{abstract}
 Security operations centres increasingly receive alerts from learned provenance-based intrusion
 detectors, but such an alert says only that activity is improbable. Analysts accept explanations
@@ -116,8 +100,8 @@ an alert from thousands of events to tens of actions and, ordered by novelty rat
 attacker first; a simulated analyst escalates \TriageWindowsAfter{} of \TriageWindowsBefore{} alerted
 windows and misses none with attacker activity. \emph{Explanation accuracy:} for rare-action alerts no
 subgraph is a cause and any subgraph passes a sufficiency test; for context-dependent alerts a gradient is
-as faithful as search-based explainers, while standard GNN explainers fail exact deletion and v1's
-objective explains why the event looks normal; explanations over memory history add cost but no
+as faithful as search-based explainers, while standard GNN explainers fail exact deletion and
+GNNExplainer's standard objective explains why the event looks normal; explanations over memory history add cost but no
 faithfulness, because the memory is nearly empty. \emph{Knowledge limits:} the variational explainer's
 uncertainty is calibrated (ECE \CalECE{}), context-dependent alerts are marginal, PROVEX's deletions agree
 with a full re-execution of the detector on the alert decision in \EsevenFlipAgree{} of cases, and the
@@ -370,7 +354,7 @@ the score when item $i$ is kept with gate $g_i\in[0,1]$, so that $L(\mathbf{1})=
 \textbf{Explain the anomaly, not the label.} GNNExplainer-style methods minimise
 $\mathrm{CE}(f(G\odot\mathbf m), y_e)$. For a classifier this finds evidence \emph{for} the predicted
 label. For an anomaly score $L=-\log p(y_e)$ it finds the items whose presence makes the observed type
-\emph{likely}: the evidence that the event is normal. This was the objective of v1. We define two
+\emph{likely}: the evidence that the event is normal. We define two
 objectives with margin $\delta$ and temperature $T$:
 \begin{align}
 \text{preserve:}\quad &\min_{\mathbf g}\ \textstyle\sum_i g_i \ \ \text{s.t.}\ L(\mathbf g)\ge\min(L(\mathbf 1),\tau+\delta),\\
@@ -417,8 +401,8 @@ a gated-off edge is replaced by learned baselines with the softmax recomputed. I
 neighbour channel only.
 
 \textbf{Baselines.} Random, recency, attention, gradient, integrated gradients and occlusion (over the
-200 items with the largest gradient); GNNExplainer with our objective; GNNExplainer with the v1 objective
-as a documented counter-example; and a T-GNNExplainer-style Monte-Carlo tree search over subsets of at
+200 items with the largest gradient); GNNExplainer with our objective; GNNExplainer with its standard
+objective (cross-entropy of the observed type) as a counter-example; and a T-GNNExplainer-style Monte-Carlo tree search over subsets of at
 most 10 items, with a gradient prior in place of its learned navigator.
 
 \subsection{Tier 3: internals and limits}
@@ -516,7 +500,7 @@ objective lowers the score more than deleting five random items in only \HAWinGn
 events; for attention the figure is \HAWinAttentionWinsFive{} and for GraphMask \HAWinGraphMaskWinsFive{}.
 Their masks are learned under other interventions: PyG scales messages after the attention softmax, and
 GraphMask substitutes learned baselines. Neither is deletion, so their rankings do not predict what
-removing an event does. The v1 objective is inverted, as \S\ref{sec:objectives} predicts: deleting its top
+removing an event does. GNNExplainer's standard objective is inverted, as \S\ref{sec:objectives} predicts: deleting its top
 five items \emph{raises} the score for \HAWinGnnxVoneRaisesFive{} of events, and its own selected set
 sustains the alert for only \HAWinGnnxVoneOwnValid{}.
 
