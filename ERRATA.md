@@ -10,7 +10,7 @@ This file lists the problems found in PROVEX v1 (arXiv:2512.18199v1; this repo a
 | Table IV (edge ablation, "−78%", "Alert: No") | No ablation or alert code existed, and the edges do not exist. | Withdrawn. Replaced by measured deletion and insertion curves and alert-flip rates. |
 | Table III (comprehensiveness 0.82, sufficiency 0.15) | Incompatible with the code. The metrics were computed on p(true type), which is about 1e-11 for alerting events, so they are about 0. The paper also read their sign backwards. | Withdrawn. Replaced by anomaly-term metrics. |
 | Case study ("bash reads /etc/passwd", "bash → attacker.com:8010") | Not in the data. The real chain on 04-06 is attacker IPs → nginx → `/tmp/vUgefal` → `/etc/passwd`, with C2 traffic to 139.123.0.113. | Rewritten from generated outputs. |
-| Appendix JSON | Placeholder values. | Replaced with a real output excerpt. |
+| Appendix JSON | Placeholder values. | Removed. v2 releases the explanation records themselves, and the paper's case-study tables are generated from them. |
 
 ## Code defects in v1 and their v2 fixes
 
