@@ -2,12 +2,7 @@
 
 PROVEX explains the alerts of [KAIROS](https://github.com/ProvenanceAnalytics/kairos), a temporal graph network (TGN) intrusion detector for system provenance graphs, on DARPA TC CADETS E3, for analysts in a security operations centre (SOC). It asks what a *faithful* explanation of a learned provenance detector can tell an analyst, and how much it reduces the work of deciding on an alert. The study is organised around NIST's four principles of explainable AI and the analyst tiers reported in *Too Much to Trust?* (arXiv:2503.02065v2).
 
-> **v1 errata.** The first version (arXiv:2512.18199v1; tag `v1.0-arxiv-v1`) had defects that invalidate its results:
-> - explained edges carried local indices instead of node IDs;
-> - every explainer explained why an event looks *normal*;
-> - Tables II–IV and the case study cite edges that do not exist in CADETS E3.
->
-> Those results are withdrawn. [ERRATA.md](ERRATA.md) lists every problem and what v2 changes. v2 re-measures everything, and every number in the v2 paper is generated from `results/` by `bash scripts/run_experiments.sh tables` and `bash scripts/run_experiments.sh xai`.
+> **About v1.** The first version (arXiv:2512.18199v1, tag `v1.0-arxiv-v1`) had implementation errors that affected its results. v2 corrects them and re-measures everything; [ERRATA.md](ERRATA.md) has the details.
 
 ## What v2 does
 
