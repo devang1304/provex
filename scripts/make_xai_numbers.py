@@ -41,10 +41,11 @@ def rng(vals, fmt):
     return fmt(lo) if fmt(lo) == fmt(hi) else f"{fmt(lo)}--{fmt(hi)}"
 
 
-def table(caption, label, header, rows, align):
-    return ("\\begin{table}[t]\n\\centering\\small\n\\caption{" + caption + "}\n\\label{" + label + "}\n"
+def table(caption, label, header, rows, align, wide=False):
+    env = "table*" if wide else "table"
+    return ("\\begin{" + env + "}[t]\n\\centering\\small\n\\caption{" + caption + "}\n\\label{" + label + "}\n"
             "\\fittable{\\begin{tabular}{" + align + "}\n\\toprule\n" + " & ".join(header) + " \\\\\n\\midrule\n"
-            + "\n".join(" & ".join(r) + " \\\\" for r in rows) + "\n\\bottomrule\n\\end{tabular}}\n\\end{table}\n")
+            + "\n".join(" & ".join(r) + " \\\\" for r in rows) + "\n\\bottomrule\n\\end{tabular}}\n\\end{" + env + "}\n")
 
 
 def main():
@@ -177,7 +178,7 @@ def main():
             "Decision burden and story versus reality for the two KAIROS alerts. Items to read; rank of the first "
             "attacker action among the alert's top 10 (for KAIROS summary graphs: nodes in larger communities read "
             "before the first community holding an attacker entity); DARPA attack steps recovered.",
-            "tab:h1", ["View", "Items to read", "First attacker item", "DARPA steps"], rows, "llll"))
+            "tab:h1", ["View", "Items to read", "First attacker item", "DARPA steps"], rows, "llll", wide=True))
 
     nc = load(A / "novelty_control.json") or {}
     rows = []
@@ -199,7 +200,8 @@ def main():
         (O / "tab_novelty.tex").write_text(table(
             "Is the story's novelty flag enough on its own? The flag (an external IP address or a program first "
             "seen today) applied with and without KAIROS, over all " + n["CtlTestWindows"] + " test windows.",
-            "tab:novelty", ["Rule", "Windows", "TP", "FP", "Precision", "Attacks", "Val. windows"], rows, "lrrrrrr"))
+            "tab:novelty", ["Rule", "Windows", "TP", "FP", "Precision", "Attacks", "Val. windows"], rows, "lrrrrrr",
+            wide=True))
 
     # H2-H5: technique comparison, as \H<setting><class><method><metric> (letters only), plus E6/E7
     tq = load(A / "techniques.json") or {}
@@ -243,10 +245,22 @@ def main():
     n["EsevenN"] = num(e7.get("n")); n["EsevenMedErr"] = num(e7.get("median_rel_err"), 3)
     n["EsevenPNinety"] = num(e7.get("p90_rel_err"), 3); n["EsevenSpearman"] = num(e7.get("spearman"), 2)
     n["EsevenFlipAgree"] = pct(e7.get("flip_agreement")); n["EsevenExact"] = pct(e7.get("exact_scope_share"))
+    words = {1: "One", 5: "Five", 20: "Twenty"}
+    for kind, kt in (("top", "Top"), ("random", "Random")):
+        for k, kw in words.items():
+            b = (e7.get("by") or {}).get(f"{kind}{k}", {})
+            tag = f"Eseven{kt}{kw}"
+            n[tag + "N"] = num(b.get("n")); n[tag + "Agree"] = pct(b.get("agree"))
+            n[tag + "FlipFull"] = pct(b.get("flip_full")); n[tag + "FlipReplay"] = pct(b.get("flip_replay"))
+            n[tag + "DropFull"] = num(b.get("drop_full_median"), 2); n[tag + "DropReplay"] = num(b.get("drop_replay_median"), 2)
+            n[tag + "AbsDiff"] = num(b.get("abs_diff_median"), 2)
     mpath = load(A / "memory_path_4_12.json") or {}
     md = mpath.get("median", {})
     n["MemPathMemNormU"] = num(md.get("mem_norm_u"), 3); n["MemPathSkipNormU"] = num(md.get("skip_minus_bias_norm_u"), 3)
     n["MemPathConvNormU"] = num(md.get("conv1_norm_u"), 3)
+    n["MemPathNodesNorm"] = num(md.get("mem_norm_nodes_median"), 3)
+    n["MemPathNodesNormMax"] = num((mpath.get("max") or {}).get("mem_norm_nodes_median"), 3)
+    n["MemPathN"] = num(mpath.get("n"))
 
     # every macro and table the paper uses exists even when an input is missing (CI compiles on empty results)
     for w in WORD.values():

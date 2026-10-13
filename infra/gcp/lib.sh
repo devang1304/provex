@@ -229,7 +229,21 @@ wait_for_ready() {
   start_epoch="$(iso_to_epoch "$I_LASTSTART")"
   end=$(( $(date +%s) + tmo * 60 ))
   log "waiting for the startup script on $vm (serial-console marker; first boot takes 3-15 min) ..."
+  local t_begin n_poll=0 fe
+  t_begin=$(date +%s)
   while :; do
+    # Fallback: the serial-console read has failed silently before (2026-10-11 and 10-12) although the
+    # script had finished in seconds. After 3 min, also look for the done-file over ssh (/run is tmpfs,
+    # so a file there is from this boot).
+    if (( $(date +%s) - t_begin >= 180 && ++n_poll % 4 == 0 )); then
+      fe="$(timeout 60 gcloud compute ssh "${SSH_USER}@${vm}" --zone="$zone" --quiet \
+              --command='cat /run/provex-startup.done 2>/dev/null' < /dev/null 2>/dev/null \
+            | tr -d '\r' | sed -n 's/^finished_epoch=//p')" || fe=""
+      if [[ -n $fe ]] && (( fe + 5 >= start_epoch )); then
+        log "startup script finished on $vm (found over ssh; the serial console showed no marker)"
+        return 0
+      fi
+    fi
     line="$(gcv compute instances get-serial-port-output "$vm" --zone="$zone" --port=1 2>/dev/null \
       | grep -aoE 'PROVEX-STARTUP-(DONE|FAILED) epoch=[0-9]+' | tail -n 1)" || line=""
     if [[ -n $line ]]; then

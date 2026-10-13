@@ -7,6 +7,8 @@
 \usepackage{xcolor}
 \usepackage{url}
 \usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 % generated tables shrink to the column (or page) width only when they are wider than it
 \newcommand{\fittable}[1]{\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{#1}}
@@ -62,11 +64,12 @@ anomalous from the action type alone. We present PROVEX, a tiered explanation la
 story reduces the two alerts from \FlaggedEventsSix{} and \FlaggedEventsTwelve{} flagged events to
 \StoryItemsSix{} and \StoryItemsTwelve{} actions, puts an attacker action first in both, and lets a
 simulated analyst cut the windows to escalate from \TriageWindowsBefore{} to \TriageWindowsAfter{}
-without missing an attack window. Exact deletion tests show that rare-action alerts have no causal
-subgraph (a random subgraph passes the usual sufficiency test), that context-dependent alerts are
+without missing an attack window. Deletion tests on an exact replay show that rare-action alerts have no
+causal subgraph (a random subgraph passes the usual sufficiency test), that context-dependent alerts are
 explained faithfully by a plain gradient, and that GNNExplainer, GraphMask and attention are no better
-than random once removing an event means deleting it. We close with implications for XAI in SOC
-operations.\end{abstract}
+than random once removing an event means deleting it. PROVEX's history-gated explainers, its most
+expensive component, add no faithfulness: KAIROS's memory is nearly empty, and the evidence lies in recent
+neighbour edges. We close with implications for XAI in SOC operations.\end{abstract}
 
 \begin{IEEEkeywords}
 Explainable AI, security operations, provenance, intrusion detection, temporal graph networks
@@ -75,9 +78,9 @@ Explainable AI, security operations, provenance, intrusion detection, temporal g
 %=====================================================================================================
 \section{Introduction}
 \label{sec:intro}
-Security operations centres (SOCs) receive far more alerts than they can investigate. Analysts describe
-most alarms as true detections of benign triggers, and validating them as tedious work that leads to
-burnout~\cite{alahmadi}. Provenance-based intrusion detection systems (PIDS) promise better alarms: they
+Security operations centres (SOCs) receive far more alerts than they can investigate. Most of the alarms
+analysts call false positives are true detections of benign triggers, and validating them is tedious work
+that can lead to burnout~\cite{alahmadi}. Provenance-based intrusion detection systems (PIDS) promise better alarms: they
 represent system activity as a graph of processes, files and sockets and learn what normal activity looks
 like~\cite{kairos,unicorn,orthrus,bilot}. A learned detector's alert, however, says only \emph{that}
 activity is improbable under its model, not \emph{why}. Practitioners ask for the evidence behind a score,
@@ -95,12 +98,14 @@ This paper asks what a faithful explanation of a learned provenance detector can
 much it reduces the work of deciding on an alert. We study KAIROS~\cite{kairos}, a representative
 detector built on a temporal graph network (TGN)~\cite{tgn} with public code, on DARPA TC Engagement~3
 CADETS~\cite{darpa}. We organise the study around NIST's four principles (explanation, meaningful,
-explanation accuracy, knowledge limits)~\cite{nist} and the classic distinction between transparency,
-interpretability and explainability~\cite{arrieta,lipton}. Our evaluation is \emph{functionally
+explanation accuracy, knowledge limits)~\cite{nist} and the distinctions between transparency,
+interpretability and explainability drawn in the XAI literature~\cite{lipton,arrieta}, which we use
+operationally (\S\ref{sec:background}). Our evaluation is \emph{functionally
 grounded}~\cite{doshivelez}: we run no user study, and instead measure proxies for an analyst's work
 (items to read, the rank of the first attacker action, and a simulated analyst that decides from the
-explanation alone) against two independent ground truths: node labels from ORTHRUS/PIDSMaker~\cite{orthrus,bilot}
-and the attack steps in DARPA's ground-truth report, which we encode as observable entity patterns.
+explanation alone) against two separately produced encodings of DARPA's ground truth: node labels from
+ORTHRUS/PIDSMaker~\cite{orthrus,bilot}, and the attack steps in DARPA's ground-truth report~\cite{darpa},
+which we encode ourselves as observable entity patterns.
 
 \textbf{Findings.} \emph{Transparency:} our replay reproduces KAIROS's scores exactly
 (\ParityDaysOK{} days), and the rebuilt detector catches \NumAttacksDetected{} of the four attacks.
@@ -112,9 +117,11 @@ attacker first; a simulated analyst escalates \TriageWindowsAfter{} of \TriageWi
 windows and misses none with attacker activity. \emph{Explanation accuracy:} for rare-action alerts no
 subgraph is a cause and any subgraph passes a sufficiency test; for context-dependent alerts a gradient is
 as faithful as search-based explainers, while standard GNN explainers fail exact deletion and v1's
-objective explains why the event looks normal. \emph{Knowledge limits:} the variational explainer's
-uncertainty is calibrated (ECE \CalECE{}), context-dependent alerts are marginal, and the detector's blind
-spot for short attacks has to be reported alongside its explanations.
+objective explains why the event looks normal; explanations over memory history add cost but no
+faithfulness, because the memory is nearly empty. \emph{Knowledge limits:} the variational explainer's
+uncertainty is calibrated (ECE \CalECE{}), context-dependent alerts are marginal, PROVEX's deletions agree
+with a full re-execution of the detector on the alert decision in \EsevenFlipAgree{} of cases, and the
+detector's blind spot for short attacks has to be reported alongside its explanations.
 \textbf{Contributions.}
 \begin{itemize}
 \item \textbf{Transparency} (\S\ref{sec:transparency}). An exact, auditable reproduction of KAIROS from
@@ -146,21 +153,29 @@ $p(y\mid e)$, and the anomaly score is $L(e)=-\log p(y_e\mid e)$. Only after sco
 each node aggregates the \emph{latest} message of the batch and applies a GRU. Memory and loader reset at
 the start of each day.
 
-Windows close at batch boundaries once 15~minutes have elapsed. Events with $L\ge\tau_w$, where
+Windows close at batch boundaries once 15~minutes have elapsed. Events with $L>\tau_w$, where
 $\tau_w=\mu_w+1.5\sigma_w$ over the window, are anomalous. Windows that share rare anomalous entities are
-chained into queues; a queue scores $\prod_w(1+\bar L_w)$ over its windows' mean anomalous scores, and a
-queue above $\beta{=}100$ raises an alert on all its windows~\cite{kairos}. For investigation, KAIROS
-builds a \emph{summary graph} from each alerted window's anomalous edges and splits it into communities.
+chained into queues, and a queue whose score exceeds a threshold $\beta$ raises an alert on all its
+windows~\cite{kairos}. The released code scores a queue as $\prod_w(1+\bar L_w)$ over its windows' mean
+anomalous scores and sets $\beta{=}100$; we use it unchanged. For investigation, KAIROS builds a weighted
+graph from the anomalous edges of the alerted windows and splits it with Louvain community detection; each
+community is a candidate \emph{summary graph}.
 
 \subsection{Principles of explainability}
-The classic distinction~\cite{arrieta,lipton} separates \emph{transparency} (the mechanism can be
-inspected and re-run), \emph{interpretability} (its behaviour maps to concepts people understand) and
-\emph{explainability} (a specific output comes with an account of why). NIST's four
+Lipton separates transparency (whether a person can simulate a model, understand its parts or its
+training algorithm) from post-hoc interpretability, such as local explanations of individual predictions,
+and warns that post-hoc accounts can mislead~\cite{lipton}. Barredo Arrieta et~al.\ distinguish
+interpretability, a passive property of a model that they also call transparency, from explainability,
+the active account a model gives of its functioning~\cite{arrieta}. A learned PIDS cannot be made
+simulatable, so we use the three terms operationally: \emph{transparency} means the detector can be
+inspected and re-run exactly, so that every alert can be re-derived; \emph{interpretability} means its
+global behaviour maps to concepts an analyst understands; and \emph{explainability} means a specific
+alert comes with an account of why. NIST's four
 principles~\cite{nist} state what an explainable system owes its users: it delivers evidence or reasons
 for its outputs (\emph{explanation}); these are understandable to their intended consumers
 (\emph{meaningful}); they correctly reflect the reason for the output (\emph{explanation accuracy});
-and the system operates only under the conditions it was designed for and signals when it is outside
-them (\emph{knowledge limits}). Doshi-Velez and Kim~\cite{doshivelez} distinguish application-grounded,
+and the system operates only under the conditions it was designed for and when it reaches sufficient
+confidence in its output, declaring the cases where its answers are not reliable (\emph{knowledge limits}). Doshi-Velez and Kim~\cite{doshivelez} distinguish application-grounded,
 human-grounded and functionally grounded evaluation; the last uses formal proxies and no humans, and is
 what this paper does.
 
@@ -179,13 +194,15 @@ GNNExplainer~\cite{gnnexplainer} learns soft edge masks; GraphMask~\cite{graphma
 hard-concrete gates; PGExplainer~\cite{pgexplainer} amortises mask prediction; CF-GNNExplainer~\cite{cfgnnexplainer}
 learns minimal deletions that flip a prediction. For temporal graphs, T-GNNExplainer~\cite{tgnnexplainer}
 searches subsets of past events and TempME~\cite{tempme} explains with temporal motifs; only recent
-methods attribute through TGN memory~\cite{memexplainer,xiong}. All of them explain predicted labels,
-not a self-supervised anomaly score. For provenance detectors, ProvExplainer~\cite{provexplainer} distils
-a GNN into interpretable surrogates and ProvX~\cite{provx} searches counterfactual perturbations;
-NoDoze~\cite{nodoze} ranks alerts by the rarity of their causal graphs, and ORTHRUS~\cite{orthrus} measures
-the analyst effort an alert costs. Evaluation pitfalls are well documented: saliency methods can be
-insensitive to the model~\cite{adebayo}, removal-based scores need care~\cite{hooker}, security tasks need
-their own criteria~\cite{warnecke,arp}, and benchmark choices change conclusions about PIDS~\cite{bilot,guerra}.
+methods attribute through TGN memory~\cite{memexplainer,xiong}. All of them explain a model's prediction (a
+class or a link probability), not an anomaly score defined as the loss of an observed outcome, which is
+what KAIROS alerts on. For provenance detectors, ProvExplainer~\cite{provexplainer} distils
+a GNN detector into an interpretable decision-tree surrogate and ProvX~\cite{provx} searches counterfactual perturbations;
+NoDoze~\cite{nodoze} ranks alerts by the rarity of their causal graphs, and ORTHRUS~\cite{orthrus} frames
+the analyst effort a detector's output costs as quality of attribution, measured by the flagged nodes an
+analyst must inspect. Evaluation pitfalls are well documented: saliency methods can be
+insensitive to the model~\cite{adebayo}, removal-based scores need care~\cite{hooker}, security work needs
+its own evaluation criteria~\cite{warnecke,arp}, and benchmark choices change conclusions about PIDS~\cite{bilot,guerra}.
 %=====================================================================================================
 \section{Study Design}
 \label{sec:design}
@@ -197,7 +214,7 @@ matches the attack; H4 whether limits are visible; H5 what it costs.
 \centering\small
 \caption{Hypotheses, the principles they test, and how we measure them (functionally grounded).}
 \label{tab:hypotheses}
-\begin{tabular}{p{0.20\textwidth}p{0.17\textwidth}p{0.33\textwidth}p{0.22\textwidth}}
+\begin{tabular}{p{0.20\textwidth}p{0.16\textwidth}p{0.32\textwidth}p{0.21\textwidth}}
 \toprule
 Hypothesis & Principle & Measure & Ground truth / baseline\\
 \midrule
@@ -217,8 +234,8 @@ documented patches (seeds, all test days, all four attacks, PyG~2.7 compatibilit
 rare-node scores of the queues, 04-05 is the validation day and 04-06 to 04-13 are test days.
 
 \textbf{Ground truth.} Node labels come from ORTHRUS/PIDSMaker~\cite{orthrus,bilot}, mapped to KAIROS
-nodes by name, which is how KAIROS keys them. Independently, we encode each attack's steps in DARPA's
-report (exploit, staging, payload, privilege elevation and command and control, reconnaissance, lateral
+nodes by name, which is how KAIROS keys them. ORTHRUS's authors derived these labels from DARPA's textual
+report; we encode the same report a second way, as each attack's steps~\cite{darpa} (exploit, staging, payload, privilege elevation and command and control, reconnaissance, lateral
 payload, injection) as patterns over IP addresses, file paths and process names, with the report's times
 and 15~minutes of slack.
 
@@ -265,8 +282,13 @@ the memory of the event's two endpoints zeroed; and the type prior alone (no edg
 
 \textbf{Context reaches the score only through neighbours.} Removing every neighbour edge gives exactly
 the type-prior score, and zeroing the memory of the event's own endpoints changes the score by at most
-\MemZeroMaxEffect{} (10th to 90th percentile). Whatever the memory holds reaches an event through the
-messages of its neighbours.
+\MemZeroMaxEffect{} (10th to 90th percentile). The reason is that the memory is nearly empty: over
+\MemPathN{} alert events of 04-12, the endpoints' memory vectors have a median norm of \MemPathMemNormU{},
+the memories of the other nodes in the computation graph a median of \MemPathNodesNorm{} (at most
+\MemPathNodesNormMax{}), and the term through which an endpoint's own memory enters the first layer moves
+that layer's output by a median of \MemPathSkipNormU{} against an output norm of \MemPathConvNormU{}.
+What reaches the score is the attention-weighted messages of recent neighbour edges, and with memory this
+small their content must come mainly from the edges' own features: event type, endpoint hashes and timing.
 
 \textbf{Most alerts are about the action itself.} Of the \NumAlertEvents{} alert events,
 \NumPriorEvents{} (\FracPriorEvents{}) exceed their window's threshold from the event type alone,
@@ -300,8 +322,31 @@ wget mirror. Inside labelled attack windows, \GTWindowIOCShare{} of anomalous ev
 %=====================================================================================================
 \section{PROVEX: Tiered Explanations}
 \label{sec:provex}
-PROVEX follows the tiers analysts describe~\cite{tmt}. Tier~1 is a short story per alert for triage;
-Tier~2 explains individual events on demand; Tier~3 exposes internals, uncertainty and limits.
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\footnotesize, >=Stealth, node distance=0.25cm,
+    box/.style={draw, rounded corners=2pt, align=left, inner sep=4pt, text width=#1}, box/.default=5.2cm]
+  \node[box=3.3cm] (k) {\textbf{KAIROS}\\ events $\rightarrow$ TGN scores $L(e)$\\ 15-minute windows, $\tau_w=\mu_w+1.5\sigma_w$\\ queues of windows; alert if score $>\beta$};
+  \node[box, right=1.1cm of k, yshift=1.25cm] (t1) {\textbf{Tier 1: the alert story} (every alert; seconds)\\ actions (subject, type, object) with rare-action and novelty facts, in triage order; the story's limits};
+  \node[box, below=of t1] (t2) {\textbf{Tier 2: why this event} (on demand)\\ gradient ranking checked by exact deletion; history-gated joint and variational explainers};
+  \node[box, below=of t2] (t3) {\textbf{Tier 3: internals and limits} (on demand)\\ alert class, channel scores, margin, inclusion probabilities, truncated-closure flags, detector blind spots};
+  \node[right=0.35cm of t1, align=left] {Tier-1 analyst:\\ triage the alert};
+  \node[right=0.35cm of t2, align=left] {Tier-2 analyst:\\ investigate an event};
+  \node[right=0.35cm of t3, align=left] {Tier-3 analyst:\\ audit the model};
+  \draw[->] (k.east) -- (t1.west);
+  \draw[->] (k.east) -- (t2.west);
+  \draw[->] (k.east) -- (t3.west);
+\end{tikzpicture}
+\caption{PROVEX turns each KAIROS alert into three tiers of explanation, matching the analyst roles
+of~\cite{tmt}. Every explanation is computed on an exact replay of the detector, and every claim about
+removing an event is checked by deleting it from an exact replay of the detector.}
+\label{fig:tiers}
+\end{figure*}
+PROVEX's tiers are informed by the roles analysts describe~\cite{tmt} (Fig.~\ref{fig:tiers}). Tier~1 is a
+short story per alert for triage; Tier~2 explains individual events on demand; Tier~3 exposes internals,
+uncertainty and limits. Tier-1 and Tier-3 content match what those analysts asked for. Tier-2 analysts
+asked for causal narratives that link alerts across stages, which per-event explanations only begin to
+provide.
 
 \subsection{Tier 1: the alert story}
 For each alert (a KAIROS queue) and each of its windows, PROVEX groups the anomalous events into
@@ -342,7 +387,7 @@ threshold, and \emph{long-memory} otherwise. For prior-driven events no set of i
 Tier~1's ``rare action'' is the faithful explanation.
 
 \label{sec:history}
-\textbf{Exact history gating.} To let a gate on a past event mean ``this event never happened'', PROVEX
+\textbf{History gating.} To let a gate on a past event approximate ``this event never happened'', PROVEX
 replays the TGN memory update differentiably for the endpoints and their \emph{influence closure} (nodes
 whose earlier messages reached them, capped at 64 and flagged when truncated). For a node with candidate
 messages ordered as PyG resolves ties, gates $g_k$ give weights $w_k=g_k\prod_{j<k}(1-g_j)$ and update
@@ -350,8 +395,11 @@ probability $P=1-\prod_k(1-g_k)$, and
 \[
 \mathbf s_i'=P\,\frac{\sum_k w_k\,\mathrm{GRU}(\mathbf m_k,\mathbf s_i)}{\sum_k w_k}+(1-P)\,\mathbf s_i .
 \]
-With binary gates this is exactly the detector's update: deleting the latest message promotes the next,
-and deleting all of a node's messages leaves it un-updated. Timestamps are subtracted in 64-bit integers
+With binary gates this is exactly the detector's update for every node in the closure: deleting the latest
+message promotes the next, and deleting all of a node's messages leaves it un-updated. Two things are not
+replayed: nodes outside a truncated closure keep their recorded memory, and the neighbour loader is not
+back-filled with older neighbours after a deletion. We measure the resulting gap against a full
+re-execution of the detector without the deleted events (E7, \S\ref{sec:eval}). Timestamps are subtracted in 64-bit integers
 before conversion, since KAIROS encodes time as $\cos(\mathbf w\,\Delta t)$ with $\Delta t\sim10^{12}$\,ns.
 Neighbour edges are deleted exactly by rescaling surviving messages by the attention mass that remains
 at their target; PyG's explanation hook scales after the softmax and is not a deletion.
@@ -411,7 +459,8 @@ escalates \TriageWindowsAfter{}: \TriageTP{} with attacker activity and \TriageF
 text browser fetched pages from new addresses and the mail server received spam.
 
 \textbf{Is it the detector or the novelty?} The triage flag is a simple novelty rule, and an allowlist of
-known programs can rival learned detectors on these datasets~\cite{guerra}. Table~\ref{tab:novelty}
+executable names and paths seen in training matches or beats several learned detectors on DARPA E3
+data~\cite{guerra}. Table~\ref{tab:novelty}
 therefore applies the same flag to every test window, with and without KAIROS.
 The novelty flag on its own is not a detector. Applied to every one of the \CtlTestWindows{} test windows,
 it flags \CtlNoveltyAllFlagged{}, of which \CtlNoveltyAllFP{} contain no attacker activity (precision
@@ -426,8 +475,10 @@ story are complementary. KAIROS's rarity scores and queues narrow the test windo
 \CtlKairosStoryFlagged{} (precision \CtlKairosStoryPrecision{}) without losing an attack window.\input{generated/tab_novelty}
 
 \subsection{H2: Is the story the detector's story?}
-We test every explanation by exact deletion: removing an item means that past event never happened,
-and the score is recomputed by the replay of \S\ref{sec:history}. Every recomputed full score equals the
+We test every explanation by deletion with binary gates on the replay of \S\ref{sec:history}. In setting~A
+an item's message is removed from the event's computation graph; in setting~B it is also removed from the
+replayed memory history. These are exact interventions on PROVEX's replay, not full re-executions of the
+detector without the event; H4 measures the difference. Every recomputed full score equals the
 detector's (\HADropped{} events dropped in setting~A, \HBDropped{} in setting~B). Setting~A explains the
 neighbour-edge channel only, which \S\ref{sec:interpretability} showed is the only route context takes,
 and covers all \HAWinN{} context-dependent alert events and a stratified sample of \HAPriorN{}
@@ -469,7 +520,18 @@ removing an event does. The v1 objective is inverted, as \S\ref{sec:objectives} 
 five items \emph{raises} the score for \HAWinGnnxVoneRaisesFive{} of events, and its own selected set
 sustains the alert for only \HAWinGnnxVoneOwnValid{}.
 
-\textbf{With history.} \todo{setting B: history share of top items, joint vs edges-only, E7}
+\textbf{With history, nothing changes for the better.} Adding the last 16 batches of history raises the
+items per event to a median of \HBWinItems{}, but the items that matter remain neighbour edges: none of the
+gradient's top five items is a history-only event (\HBWinGradientHistFive{}), deleting its top ten clears
+\HBWinGradientFlipTen{} of the \HBWinN{} alerts, and keeping its top five sustains \HBWinGradientKeepFive{}.
+PROVEX's joint explainer does worse with history than without it: the history-gated version clears
+\HBWinJointFlipTen{} at $k{=}10$ and returns validated sets of a median \HBWinJointOwnSize{} items, the
+edges-only version \HBWinJointEdgesFlipTen{} with \HBWinJointEdgesOwnSize{} items. The variational
+explainer is the only method whose top items are mostly history events (\HBWinVariationalHistFive{}), and
+those items sustain the alert in only \HBWinVariationalKeepFive{} of events. With the near-empty memory of
+\S\ref{sec:interpretability}, this refutes the expectation that motivated PROVEX's history gating, namely
+that history explains context-dependent alerts with fewer removals than edges do. For KAIROS on CADETS the
+memory history adds cost and no faithfulness.
 
 \input{generated/tab_faith_prior}
 \subsection{H3: Does the story match the attack?}
@@ -507,7 +569,21 @@ top five items overlap with Jaccard \StabVariationalJaccard{} (Kendall $\tau_b$
 rankings have no seed and are identical on every run. An analyst who asks twice and gets a different answer
 from GNNExplainer has no reason to trust either.
 
-\textbf{Approximations are flagged and measured.} \todo{E7: functional replay vs full re-execution; truncated closures}
+\textbf{Approximations are flagged and measured.} In setting~B every influence closure reached the
+64-node cap (exact scope in \EsevenExact{} of cases), and Tier~3 flags this. We compared PROVEX's deletions
+with full re-executions of the detector without the deleted events: \EsevenN{} cases, made of the top 1, 5
+and 20 items of the counterfactual explanation and random sets of the same sizes for each setting-B event.
+The two agree on whether the alert survives in \EsevenFlipAgree{} of cases: in \EsevenRandomFiveAgree{} of
+random deletions, which barely move the score, but only \EsevenTopOneAgree{}, \EsevenTopFiveAgree{} and
+\EsevenTopTwentyAgree{} for the top 1, 5 and 20 items. Smaller deletions are understated (the top five
+lower the score by a median of \EsevenTopFiveDropReplay{} nats in the replay, against
+\EsevenTopFiveDropFull{} on re-execution) and larger ones overstated (\EsevenTopTwentyDropReplay{} against
+\EsevenTopTwentyDropFull{} for the top twenty). The gap has two causes: the truncated closure, and the
+neighbour loader, which on re-execution fills a deleted neighbour's slot with an older one. Setting~A's
+edge deletions share the second cause; we did not measure them separately. Deletion claims in this paper
+are therefore exact statements about an intervention on PROVEX's replay, and approximate statements about
+what would have happened had the events never occurred, right on the alert decision for between
+\EsevenTopFiveAgree{} and \EsevenTopOneAgree{} of deletions of top items.
 
 \textbf{The detector's limits are part of the explanation.} Every alert story ends with the limits of
 \S\ref{sec:interpretability}: rare actions are anomalous from the action alone, context-dependent alerts
@@ -522,9 +598,10 @@ once for all the events explained that day. On the neighbour-edge channel a grad
 \HAWinJointTime{}~s (preserve) and \HAWinJointCFTime{}~s (counterfactual), and the variational explainer
 \HAWinVariationalTime{}~s, on one CPU thread. All fourteen methods with their deletion tests take a
 median of \HAWallMedian{}~s per event. With 16 batches of history the joint and variational explainers
-take \HBWinJointTime{}~s and \HBWinVariationalTime{}~s per event. Faithful Tier-2 rankings are therefore
-cheap enough to precompute for every context-dependent alert event, while history explanations and
-uncertainty belong on demand, which matches the progressive disclosure analysts ask for~\cite{tmt}.%=====================================================================================================
+take \HBWinJointTime{}~s and \HBWinVariationalTime{}~s per event, while a gradient over the same items takes
+\HBWinGradientTime{}~s. Faithful Tier-2 rankings are therefore cheap enough to precompute for every
+context-dependent alert event. Calibrated uncertainty belongs on demand, which matches the progressive
+disclosure analysts ask for~\cite{tmt}, and for this detector history explanations are not worth their cost.%=====================================================================================================
 \section{Case Studies}
 \label{sec:cases}
 \input{generated/story_4_12}
@@ -567,16 +644,22 @@ Neither half works alone: the novelty facts flag \CtlNoveltyAllFlagged{} of \Ctl
 when applied without the detector, and the detector's \CtlKairosFlagged{} alerted windows hold
 \CtlKairosFP{} without attacker activity until the story's facts are added.
 \textbf{Test an explanation by the intervention it claims.} The standard tools we tested failed exact
-deletion because their masks implement other interventions. Our own pipeline once explained a model
-whose dropout had been switched on by a library call, and every score after the first GNNExplainer call
-was wrong until a parity check exposed it. An explanation system for a SOC should verify, for every
-explanation it shows, that it reproduces the detector's score and that its claims hold under the
-intervention they describe, and it should show nothing rather than an unverified story.
+deletion because their masks implement other interventions. A silent change of model state, such as a
+library call that leaves dropout switched on, can invalidate every explanation without any visible error.
+An explanation system for a SOC should therefore verify, for every explanation it shows, that it reproduces
+the detector's score and that its claims hold under the intervention they describe, and it should show
+nothing rather than an unverified story.
 
 \textbf{Prefer the cheapest faithful method.} For context-dependent alerts a gradient was as faithful as
 search-based explainers at a fraction of their cost. Expensive explainers earn their place only where they
 add something the analyst needs, such as validated sets or calibrated uncertainty, and should run on
 demand (progressive disclosure~\cite{tmt}).
+
+\textbf{Interpret before you explain.} PROVEX's most elaborate component, a differentiable replay of the
+TGN memory that lets an explanation delete past events, added cost and no faithfulness, because KAIROS's
+memory is nearly empty. The global checks of \S\ref{sec:interpretability} cost minutes and would have
+predicted this. Before building per-event explainers for a detector, find out which of its channels
+actually carry its alerts.
 
 \textbf{Show how marginal an alert is.} Context-dependent alerts sat a median of \HAWinMargin{} nats
 above their threshold, and removing a handful of past events cleared most of them. A Tier-3 view should
@@ -591,6 +674,8 @@ limits belong to the detector as much as to its explanations, and analysts need 
 \begin{itemize}
 \item \textbf{No user study.} The evaluation is functionally grounded. Items to read, ranks and a
   simulated analyst are proxies for an analyst's work, not measurements of it~\cite{doshivelez,nyreyu}.
+  Such proxies are most trustworthy once human-grounded experiments have validated them~\cite{doshivelez},
+  which for these explanations has not yet been done.
 \item \textbf{One detector, one host, two alerts.} We study KAIROS on CADETS~E3, where KAIROS raises two
   alerts. Conclusions may not transfer to other detectors or datasets~\cite{bilot,guerra}.
 \item \textbf{The triage order was chosen after reading one story.} We fixed it after reading the 04-06
@@ -607,8 +692,9 @@ limits belong to the detector as much as to its explanations, and analysts need 
 \section{Conclusion}
 Explaining a learned provenance detector to a SOC starts with being honest about what drives it. For
 KAIROS on CADETS, most alert events are about rare actions, and their faithful explanation is a single
-line; the minority that depends on context is explained faithfully by the simplest attribution, and
-standard GNN explainers are not faithful under deletion. A short alert story ordered by novelty did more
+line; the minority that depends on context is explained faithfully by the simplest attribution, history
+adds nothing because the memory is nearly empty, and standard GNN explainers are not faithful under
+deletion. A short alert story ordered by novelty did more
 for triage than any per-event attribution, and the detector's silence on two of four attacks is a limit
 no explanation can repair. These findings rest on functional proxies, one detector and two alerts. An
 application-grounded study with analysts, which tests whether such stories change decisions, is the
@@ -623,38 +709,38 @@ necessary next step.
   \texttt{tables}.
 \end{itemize}
 \begin{thebibliography}{00}
-\bibitem{kairos} Z.~Cheng, Q.~Lv, J.~Liang, Y.~Wang, D.~Sun, T.~Pasquier, and X.~Han, ``KAIROS: Practical intrusion detection and investigation using whole-system provenance,'' in \emph{IEEE S\&P}, 2024.
-\bibitem{tgn} E.~Rossi, B.~Chamberlain, F.~Frasca, D.~Eynard, F.~Monti, and M.~Bronstein, ``Temporal graph networks for deep learning on dynamic graphs,'' in \emph{ICML Workshop on Graph Representation Learning}, 2020.
-\bibitem{unicorn} X.~Han, T.~Pasquier, A.~Bates, J.~Mickens, and M.~Seltzer, ``UNICORN: Runtime provenance-based detector for advanced persistent threats,'' in \emph{NDSS}, 2020.
-\bibitem{orthrus} B.~Jiang \emph{et~al.}, ``ORTHRUS: Achieving high quality of attribution in provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025.
-\bibitem{bilot} T.~Bilot, B.~Jiang, Z.~Li, N.~El~Madhoun, K.~Al~Agha, A.~Zouaoui, and T.~Pasquier, ``Sometimes simpler is better: A comprehensive analysis of state-of-the-art provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025.
-\bibitem{darpa} DARPA Transparent Computing, ``Engagement 3 data release,'' \url{https://github.com/darpa-i2o/Transparent-Computing}, 2018.
-\bibitem{alahmadi} B.~A.~Alahmadi, L.~Axon, and I.~Martinovic, ``99\% false positives: A qualitative study of SOC analysts' perspectives on security alarms,'' in \emph{USENIX Security}, 2022.
-\bibitem{mink} J.~Mink, H.~Benkraouda, L.~Yang, A.~Ciptadi, A.~Ahmadzadeh, D.~Votipka, and G.~Wang, ``Everybody's got ML, tell me what else you have: Practitioners' perception of ML-based security tools and explanations,'' in \emph{IEEE S\&P}, 2023.
-\bibitem{dong} F.~Dong \emph{et~al.}, ``Are we there yet? An industrial viewpoint on provenance-based endpoint detection and response tools,'' in \emph{ACM CCS}, 2023.
-\bibitem{tmt} N.~Rastogi, D.~Pant, D.~Dhanuka, A.~Saxena, and P.~Mairal, ``Too much to trust? Measuring the security and cognitive impacts of explainability in AI-driven SOCs,'' in \emph{ACM CCS}, 2025, arXiv:2503.02065.
+\bibitem{kairos} Z.~Cheng, Q.~Lv, J.~Liang, Y.~Wang, D.~Sun, T.~Pasquier, and X.~Han, ``KAIROS: Practical intrusion detection and investigation using whole-system provenance,'' in \emph{Proc. IEEE S\&P}, 2024, pp.~3533--3551, doi:10.1109/SP54263.2024.00005. Code: \url{https://github.com/ProvenanceAnalytics/kairos}.
+\bibitem{tgn} E.~Rossi, B.~Chamberlain, F.~Frasca, D.~Eynard, F.~Monti, and M.~Bronstein, ``Temporal graph networks for deep learning on dynamic graphs,'' presented at the \emph{ICML Workshop on Graph Representation Learning and Beyond (GRL+)}, 2020, arXiv:2006.10637.
+\bibitem{unicorn} X.~Han, T.~Pasquier, A.~Bates, J.~Mickens, and M.~Seltzer, ``UNICORN: Runtime provenance-based detector for advanced persistent threats,'' in \emph{NDSS}, 2020, doi:10.14722/ndss.2020.24046.
+\bibitem{orthrus} B.~Jiang, T.~Bilot, N.~El~Madhoun, K.~Al~Agha, A.~Zouaoui, S.~Iqbal, X.~Han, and T.~Pasquier, ``ORTHRUS: Achieving high quality of attribution in provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025, pp.~7173--7192.
+\bibitem{bilot} T.~Bilot, B.~Jiang, Z.~Li, N.~El~Madhoun, K.~Al~Agha, A.~Zouaoui, and T.~Pasquier, ``Sometimes simpler is better: A comprehensive analysis of state-of-the-art provenance-based intrusion detection systems,'' in \emph{USENIX Security}, 2025, pp.~7193--7212.
+\bibitem{darpa} DARPA I2O Transparent Computing Program, ``Transparent Computing Engagement 3 data release,'' Aug. 2018, with the ground-truth report \texttt{tc\_ground\_truth\_report\_e3\_update.pdf}. \url{https://github.com/darpa-i2o/Transparent-Computing/blob/master/README-E3.md}
+\bibitem{alahmadi} B.~A.~Alahmadi, L.~Axon, and I.~Martinovic, ``99\% false positives: A qualitative study of SOC analysts' perspectives on security alarms,'' in \emph{USENIX Security}, 2022, pp.~2783--2800.
+\bibitem{mink} J.~Mink, H.~Benkraouda, L.~Yang, A.~Ciptadi, A.~Ahmadzadeh, D.~Votipka, and G.~Wang, ``Everybody's got ML, tell me what else you have: Practitioners' perception of ML-based security tools and explanations,'' in \emph{IEEE S\&P}, 2023, pp.~2068--2085, doi:10.1109/SP46215.2023.10179321.
+\bibitem{dong} F.~Dong, S.~Li, P.~Jiang, D.~Li, H.~Wang, L.~Huang, X.~Xiao, J.~Chen, X.~Luo, Y.~Guo, and X.~Chen, ``Are we there yet? An industrial viewpoint on provenance-based endpoint detection and response tools,'' in \emph{ACM CCS}, 2023, pp.~2396--2410, doi:10.1145/3576915.3616580.
+\bibitem{tmt} N.~Rastogi, S.~Pant, D.~Dhanuka, A.~Saxena, and P.~Mairal, ``Too much to trust? Measuring the security and cognitive impacts of explainability in AI-driven SOCs,'' arXiv:2503.02065v2, Jul. 2025.
 \bibitem{nist} P.~J.~Phillips, C.~A.~Hahn, P.~C.~Fontana, A.~N.~Yates, K.~Greene, D.~A.~Broniatowski, and M.~A.~Przybocki, ``Four principles of explainable artificial intelligence,'' NIST, NISTIR~8312, 2021, doi:10.6028/NIST.IR.8312.
-\bibitem{arrieta} A.~Barredo~Arrieta \emph{et~al.}, ``Explainable artificial intelligence (XAI): Concepts, taxonomies, opportunities and challenges toward responsible AI,'' \emph{Information Fusion}, vol.~58, pp.~82--115, 2020.
-\bibitem{lipton} Z.~C.~Lipton, ``The mythos of model interpretability,'' \emph{Communications of the ACM}, vol.~61, no.~10, pp.~36--43, 2018.
+\bibitem{arrieta} A.~Barredo~Arrieta, N.~D\'iaz-Rodr\'iguez, J.~Del~Ser, A.~Bennetot, S.~Tabik, A.~Barbado, S.~Garc\'ia, S.~Gil-L\'opez, D.~Molina, R.~Benjamins, R.~Chatila, and F.~Herrera, ``Explainable artificial intelligence (XAI): Concepts, taxonomies, opportunities and challenges toward responsible AI,'' \emph{Information Fusion}, vol.~58, pp.~82--115, Jun. 2020, doi:10.1016/j.inffus.2019.12.012.
+\bibitem{lipton} Z.~C.~Lipton, ``The mythos of model interpretability,'' \emph{Communications of the ACM}, vol.~61, no.~10, pp.~36--43, Oct. 2018, doi:10.1145/3233231.
 \bibitem{doshivelez} F.~Doshi-Velez and B.~Kim, ``Towards a rigorous science of interpretable machine learning,'' arXiv:1702.08608, 2017.
-\bibitem{nyreyu} M.~Nyre-Yu, E.~Morris, B.~Moss, C.~Smutz, and M.~Smith, ``Explainable AI in cybersecurity operations: Lessons learned from xAI tool deployment,'' in \emph{USEC Workshop (NDSS)}, 2022.
-\bibitem{nadeem} A.~Nadeem, D.~Vos, C.~Cao, L.~Pajola, S.~Dieck, R.~Baumgartner, and S.~Verwer, ``SoK: Explainable machine learning for computer security applications,'' in \emph{IEEE EuroS\&P}, 2023.
-\bibitem{gnnexplainer} R.~Ying, D.~Bourgeois, J.~You, M.~Zitnik, and J.~Leskovec, ``GNNExplainer: Generating explanations for graph neural networks,'' in \emph{NeurIPS}, 2019.
+\bibitem{nyreyu} M.~Nyre-Yu, E.~Morris, M.~R.~Smith, B.~Moss, and C.~Smutz, ``Explainable AI in cybersecurity operations: Lessons learned from xAI tool deployment,'' in \emph{Proc. Symp. Usable Security and Privacy (USEC)}, 2022, doi:10.14722/usec.2022.23014.
+\bibitem{nadeem} A.~Nadeem, D.~Vos, C.~Cao, L.~Pajola, S.~Dieck, R.~Baumgartner, and S.~Verwer, ``SoK: Explainable machine learning for computer security applications,'' in \emph{IEEE EuroS\&P}, 2023, pp.~221--240, doi:10.1109/EuroSP57164.2023.00022.
+\bibitem{gnnexplainer} R.~Ying, D.~Bourgeois, J.~You, M.~Zitnik, and J.~Leskovec, ``GNNExplainer: Generating explanations for graph neural networks,'' in \emph{NeurIPS}, vol.~32, 2019.
 \bibitem{graphmask} M.~S.~Schlichtkrull, N.~De~Cao, and I.~Titov, ``Interpreting graph neural networks for NLP with differentiable edge masking,'' in \emph{ICLR}, 2021.
-\bibitem{pgexplainer} D.~Luo \emph{et~al.}, ``Parameterized explainer for graph neural network,'' in \emph{NeurIPS}, 2020.
-\bibitem{cfgnnexplainer} A.~Lucic, M.~ter~Hoeve, G.~Tolomei, M.~de~Rijke, and F.~Silvestri, ``CF-GNNExplainer: Counterfactual explanations for graph neural networks,'' in \emph{AISTATS}, 2022.
+\bibitem{pgexplainer} D.~Luo, W.~Cheng, D.~Xu, W.~Yu, B.~Zong, H.~Chen, and X.~Zhang, ``Parameterized explainer for graph neural network,'' in \emph{NeurIPS}, vol.~33, 2020, pp.~19620--19631.
+\bibitem{cfgnnexplainer} A.~Lucic, M.~ter~Hoeve, G.~Tolomei, M.~de~Rijke, and F.~Silvestri, ``CF-GNNExplainer: Counterfactual explanations for graph neural networks,'' in \emph{Proc. AISTATS}, PMLR vol.~151, 2022, pp.~4499--4511.
 \bibitem{tgnnexplainer} W.~Xia, M.~Lai, C.~Shan, Y.~Zhang, X.~Dai, X.~Li, and D.~Li, ``Explaining temporal graph models through an explorer-navigator framework,'' in \emph{ICLR}, 2023.
-\bibitem{tempme} J.~Chen and R.~Ying, ``TempME: Towards the explainability of temporal graph neural networks via motif discovery,'' in \emph{NeurIPS}, 2023.
-\bibitem{memexplainer} Liu, Zhang, Xie, and Xiong, ``Towards the explainability of temporal graph networks via memory backtracking and topological attribution,'' in \emph{ICML}, 2026, arXiv:2607.07716.
-\bibitem{xiong} Xiong, Schnake, M\"uller, and Nakajima, ``Explaining temporal graph neural networks via feature-induced information flow,'' arXiv:2606.27201, 2026.
-\bibitem{provexplainer} K.~Mukherjee \emph{et~al.}, ``Interpreting GNN-based IDS detections using provenance graph structural features,'' arXiv:2306.00934, 2023.
-\bibitem{provx} W.~Wu \emph{et~al.}, ``ProvX: Generating counterfactual-driven attack explanations for provenance-based detection,'' arXiv:2508.06073, 2025.
-\bibitem{nodoze} W.~U.~Hassan, S.~Guo, D.~Li, Z.~Chen, K.~Jee, Z.~Li, and A.~Bates, ``NoDoze: Combatting threat alert fatigue with automated provenance triage,'' in \emph{NDSS}, 2019.
-\bibitem{adebayo} J.~Adebayo, J.~Gilmer, M.~Muelly, I.~Goodfellow, M.~Hardt, and B.~Kim, ``Sanity checks for saliency maps,'' in \emph{NeurIPS}, 2018.
-\bibitem{hooker} S.~Hooker, D.~Erhan, P.-J.~Kindermans, and B.~Kim, ``A benchmark for interpretability methods in deep neural networks,'' in \emph{NeurIPS}, 2019.
-\bibitem{warnecke} A.~Warnecke, D.~Arp, C.~Wressnegger, and K.~Rieck, ``Evaluating explanation methods for deep learning in security,'' in \emph{IEEE EuroS\&P}, 2020.
-\bibitem{arp} D.~Arp \emph{et~al.}, ``Dos and don'ts of machine learning in computer security,'' in \emph{USENIX Security}, 2022.
-\bibitem{guerra} Guerra, Chapuis, Duc, Mozharovskyi, and Nguyen, ``How benchmarks and evaluation protocols shape conclusions in provenance-based intrusion detection,'' arXiv:2608.01454, 2026.
+\bibitem{tempme} J.~Chen and R.~Ying, ``TempME: Towards the explainability of temporal graph neural networks via motif discovery,'' in \emph{NeurIPS}, vol.~36, 2023, pp.~29005--29028.
+\bibitem{memexplainer} Y.~Liu, X.~Zhang, S.~Xie, and H.~Xiong, ``Towards the explainability of temporal graph networks via memory backtracking and topological attribution,'' in \emph{Proc. ICML}, PMLR vol.~306, 2026, pp.~79877--79906.
+\bibitem{xiong} P.~Xiong, T.~Schnake, K.-R.~M\"uller, and S.~Nakajima, ``Explaining temporal graph neural networks via feature-induced information flow,'' arXiv:2606.27201, 2026.
+\bibitem{provexplainer} K.~Mukherjee, J.~Wiedemeier, T.~Wang, M.~Kim, F.~Chen, M.~Kantarcioglu, and K.~Jee, ``Explaining provenance-based GNN detectors with interpretable graph structural features,'' in \emph{Proc. Int. Conf. Privacy, Security and Trust (PST)}, 2026, arXiv:2306.00934.
+\bibitem{provx} W.~Wu, W.~Qiao, T.~Li, Y.~Feng, Z.~Ma, J.~Ma, and Y.~Liu, ``ProvX: Generating counterfactual-driven attack explanations for provenance-based detection,'' arXiv:2508.06073, 2025.
+\bibitem{nodoze} W.~U.~Hassan, S.~Guo, D.~Li, Z.~Chen, K.~Jee, Z.~Li, and A.~Bates, ``NoDoze: Combatting threat alert fatigue with automated provenance triage,'' in \emph{NDSS}, 2019, doi:10.14722/ndss.2019.23349.
+\bibitem{adebayo} J.~Adebayo, J.~Gilmer, M.~Muelly, I.~Goodfellow, M.~Hardt, and B.~Kim, ``Sanity checks for saliency maps,'' in \emph{NeurIPS}, vol.~31, 2018.
+\bibitem{hooker} S.~Hooker, D.~Erhan, P.-J.~Kindermans, and B.~Kim, ``A benchmark for interpretability methods in deep neural networks,'' in \emph{NeurIPS}, vol.~32, 2019.
+\bibitem{warnecke} A.~Warnecke, D.~Arp, C.~Wressnegger, and K.~Rieck, ``Evaluating explanation methods for deep learning in security,'' in \emph{IEEE EuroS\&P}, 2020, pp.~158--174, doi:10.1109/EuroSP48549.2020.00018.
+\bibitem{arp} D.~Arp, E.~Quiring, F.~Pendlebury, A.~Warnecke, F.~Pierazzi, C.~Wressnegger, L.~Cavallaro, and K.~Rieck, ``Dos and don'ts of machine learning in computer security,'' in \emph{USENIX Security}, 2022, pp.~3971--3988.
+\bibitem{guerra} L.~Guerra, T.~Chapuis, G.~Duc, P.~Mozharovskyi, and V.-T.~Nguyen, ``How benchmarks and evaluation protocols shape conclusions in provenance-based intrusion detection,'' in \emph{NDSS}, 2027, to appear; arXiv:2608.01454.
 \bibitem{louizos} C.~Louizos, M.~Welling, and D.~P.~Kingma, ``Learning sparse neural networks through $L_0$ regularization,'' in \emph{ICLR}, 2018.
 \end{thebibliography}
 

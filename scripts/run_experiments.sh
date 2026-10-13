@@ -85,8 +85,7 @@ case "$stage" in
           python scripts/make_xai_numbers.py --analysis $R/analysis --out paper/generated
           python scripts/make_story_tex.py --stories $R/stories/stories.json --out paper/generated ;;
   tables) python scripts/aggregate_e6.py --records "$R/e6/*.jsonl" --out $R || true
-          mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated
-          python scripts/make_case_studies.py --results $R --gt-dir $GT --out paper/generated ;;
+          mkdir -p $R/kairos; python scripts/make_tables.py --results $R --out paper/generated ;;
   push)   gcloud storage rsync -r $R $BUCKET/results
           gcloud storage rsync -r paper/generated $BUCKET/paper_generated ;;
   *) echo "unknown stage $stage"; exit 2 ;;

@@ -7,7 +7,7 @@ PROVEX explains the alerts of [KAIROS](https://github.com/ProvenanceAnalytics/ka
 > - every explainer explained why an event looks *normal*;
 > - Tables II–IV and the case study cite edges that do not exist in CADETS E3.
 >
-> Those results are withdrawn. [ERRATA.md](ERRATA.md) lists every problem and what v2 changes. v2 re-measures everything, and every number in the v2 paper is generated from `results/` by `scripts/make_tables.py` and `scripts/make_case_studies.py`.
+> Those results are withdrawn. [ERRATA.md](ERRATA.md) lists every problem and what v2 changes. v2 re-measures everything, and every number in the v2 paper is generated from `results/` by `scripts/make_tables.py` and the XAI analyses (`bash scripts/run_experiments.sh xai`).
 
 ## What v2 does
 
@@ -31,7 +31,7 @@ PROVEX explains the alerts of [KAIROS](https://github.com/ProvenanceAnalytics/ka
 | `provex/` | The v2 package:<br>`replay/` (exact KAIROS replay, alerts, event captures)<br>`explain/` (explainers)<br>`evaluate/` (metrics, calibration, local-vs-full replay)<br>`pipeline.py` (CLI) |
 | `kairos/` | A patch series over upstream KAIROS at a pinned commit, plus `setup_upstream.sh`, which fetches upstream, verifies it and applies the patches. Upstream ships without a license, so this repository contains only the patches. |
 | `ground_truth/cadets_e3/orthrus/` | Node-level ground truth from PIDSMaker/ORTHRUS (Apache-2.0). |
-| `scripts/` | `run_experiments.sh` (every experiment stage), `make_tables.py` and `make_case_studies.py` (paper numbers), and diagnostics. |
+| `scripts/` | `run_experiments.sh` (every experiment stage, including `xai`), `make_tables.py`, `make_xai_numbers.py` and `make_story_tex.py` (paper numbers and tables), the analyses (`analyze_*.py`, `evaluate_stories.py`, `make_alert_stories.py`) and diagnostics. |
 | `tests/` | A pytest suite on a synthetic float64 model. It covers replay exactness, deletion exactness against full re-execution, explainer validity and the end-to-end CLI. |
 | `infra/gcp/` | How the experiments were run on Google Cloud, with cost guardrails: a job runner that stops the VM, an idle watchdog and a budget kill switch. |
 | `paper/` | LaTeX for v2 (`provex_v2.tex`) and v1 (`report.tex`). Generated tables go in `paper/generated/`. |

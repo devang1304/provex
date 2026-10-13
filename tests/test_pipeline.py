@@ -66,8 +66,12 @@ def test_pipeline_end_to_end(tiny, tmp_path):
                    check=True)
     assert (tmp_path / "gen" / "numbers.tex").exists() and (tmp_path / "gen" / "tab_faithfulness.tex").exists()
     assert "CFFoundNonWindow" in (tmp_path / "gen" / "numbers.tex").read_text()
-    subprocess.run([sys.executable, "scripts/make_case_studies.py", "--results", str(res), "--gt-dir", str(gt),
-                    "--out", str(tmp_path / "gen"), "--days", "4_6,4_11"], check=True)
-    cs = (tmp_path / "gen" / "case_studies.tex").read_text()
-    assert "\\paragraph{04-06}" in cs and "selection tier" in cs          # every fixture window is a GT window
-    assert "No explanation records were produced for 04-11." in cs
+    # the H2-H5 analysis and the paper macros run on the same records; every recomputed score is exact
+    subprocess.run([sys.executable, "scripts/analyze_techniques.py",
+                    "--a", str(res / "expl" / "seed_0" / "explanations_*.jsonl"), "--results", str(res),
+                    "--out", str(tmp_path / "an"), "--tex", str(tmp_path / "gen")], check=True)
+    tq = json.loads((tmp_path / "an" / "techniques.json").read_text())
+    assert tq["A"]["n_dropped_not_exact"] == 0 and tq["A"]["n_events"] == len({r["event"]["event"] for r in recs})
+    subprocess.run([sys.executable, "scripts/make_xai_numbers.py", "--analysis", str(tmp_path / "an"),
+                    "--out", str(tmp_path / "gen")], check=True)
+    assert "\\newcommand{\\HAWinN}" in (tmp_path / "gen" / "numbers_xai.tex").read_text()

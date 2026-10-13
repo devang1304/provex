@@ -25,7 +25,6 @@ jobs:
       - run: |
           mkdir -p /tmp/empty-results
           python scripts/make_tables.py --results /tmp/empty-results --out paper/generated
-          python scripts/make_case_studies.py --results /tmp/empty-results --out paper/generated
           pip install numpy
           python scripts/analyze_techniques.py --a '/tmp/empty-results/*.jsonl' --results /tmp/empty-results --out /tmp/empty-analysis --tex paper/generated
           python scripts/make_xai_numbers.py --analysis /tmp/empty-analysis --out paper/generated
